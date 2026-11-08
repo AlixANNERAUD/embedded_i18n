@@ -22,6 +22,29 @@ for &language in LOCALES.iter() {
 # Ok::<(), embedded_i18n::UnknownLocale>(())
 ```
 
+## Translating Into a Given Locale
+
+The current locale is shared by the whole program.
+When several languages are needed at once, such as a server answering each request in its user's language, give the locale to each macro instead: the `locale` option takes an index in [`LOCALES`] and leaves the current locale untouched.
+
+```rust
+use core::fmt::Write;
+use embedded_i18n::{match_locale, translate, translate_write, DEFAULT_LOCALE_INDEX};
+
+// Once per request, from a user setting or an `Accept-Language` tag.
+let locale = match_locale("fr-CA").unwrap_or(DEFAULT_LOCALE_INDEX);
+
+let greeting: &'static str = translate!(locale = locale, "greeting");
+let mut page = String::new();
+translate_write!(page, locale = locale, "with_named_args", name = "Ada", count = 3)?;
+# Ok::<(), core::fmt::Error>(())
+```
+
+Like `context`, the option comes before the message key, in any order with `context`; arguments after the key are format arguments.
+[`match_locale`] finds the embedded locale serving a requested one: the locale itself, then its parents (`fr-CA` for `fr-CA-x`, then `fr`), then any embedded locale of the same language (`fr-FR` for `fr`).
+An index outside [`LOCALES`] selects [`DEFAULT_LOCALE_INDEX`].
+In single-locale builds the option is accepted, evaluated and ignored, so the same code builds in both modes.
+
 ## API
 
 | Item | Description |
@@ -31,6 +54,7 @@ for &language in LOCALES.iter() {
 | [`set_locale`] / [`set_locale_index`] | Select the current locale by name or by index, or return [`UnknownLocale`] |
 | [`locale`] / [`locale_index`] | Read the current locale |
 | [`find_locale`] | Index of a locale in [`LOCALES`], in `const` context |
+| [`match_locale`] | Index of the embedded locale best serving a requested one, for the `locale` option |
 | [`DEFAULT_LOCALE_INDEX`] | Locale active at startup: `EMBEDDED_I18N_LOCALE`, or the first embedded locale if it is not listed |
 
 Names are compared case-insensitively, with `-` and `_` treated alike.
@@ -79,6 +103,7 @@ To format dates in the current locale, use `DateTimeFormatter::new().with_locale
 [`locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.locale.html
 [`locale_index`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.locale_index.html
 [`find_locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.find_locale.html
+[`match_locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.match_locale.html
 [`DEFAULT_LOCALE_INDEX`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/constant.DEFAULT_LOCALE_INDEX.html
 [`UnknownLocale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.UnknownLocale.html
 [`DATE_TIME_LOCALE`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/constant.DATE_TIME_LOCALE.html

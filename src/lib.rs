@@ -164,6 +164,18 @@ pub use embedded_i18n_macros::track_locales;
 /// assert_eq!(translate!(context = "menu", "Open"), "Open (menu)");
 /// ```
 ///
+/// An optional `locale`, an index in [`LOCALES`] such as one returned by
+/// [`match_locale`], translates into that locale instead of the current one.
+/// Every macro accepts it before the key, so a server can translate each
+/// request into its own language without changing the current locale:
+///
+/// ```
+/// use embedded_i18n::{match_locale, translate};
+///
+/// let locale = match_locale("en-GB").unwrap_or(embedded_i18n::DEFAULT_LOCALE_INDEX);
+/// assert_eq!(translate!(locale = locale, "greeting"), "Hello");
+/// ```
+///
 /// In single-locale builds the expansion is a literal, usable in `const` items
 /// and as the format string of `format!` or `write!`. A key missing from every
 /// locale of the chain is a compile error:

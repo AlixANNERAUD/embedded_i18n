@@ -264,3 +264,25 @@ fn translate_select_accepts_as_ref_str() {
     embedded_i18n::translate_select_write!(&mut buffer, "replied", Gender::Other).unwrap();
     assert_eq!(&buffer.bytes[..buffer.length], b"They replied");
 }
+
+#[test]
+fn explicit_locale_in_a_single_locale_build() {
+    let mut evaluated = false;
+    let mut index = || {
+        evaluated = true;
+        0
+    };
+    assert_eq!(translate!(locale = index(), "greeting"), "Hello");
+    assert!(evaluated, "the locale expression is evaluated");
+    let mut output = String::new();
+    embedded_i18n::translate_write!(output, locale = 0, "with_arg", 3).unwrap();
+    assert_eq!(output, "Value: 3");
+    let mut output = String::new();
+    write!(
+        output,
+        "{}",
+        embedded_i18n::translate_args!(locale = 0, "greeting")
+    )
+    .unwrap();
+    assert_eq!(output, "Hello");
+}

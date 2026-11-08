@@ -1,8 +1,9 @@
 use core::fmt::Write;
 
 use embedded_i18n::{
-    LOCALES, locale, locale_index, set_locale, set_locale_index, translate, translate_args,
-    translate_plural, translate_select, translate_write,
+    DEFAULT_LOCALE_INDEX, LOCALES, locale, locale_index, match_locale, set_locale,
+    set_locale_index, translate, translate_args, translate_plural, translate_select,
+    translate_write,
 };
 
 struct Buffer {
@@ -60,4 +61,44 @@ fn switches_locale_at_runtime() {
     set_locale_index(0).unwrap();
     assert_eq!(translate!("greeting"), "Hello");
     assert_eq!(translate_plural!("files", 0), "{count} files");
+}
+
+#[test]
+fn translates_into_an_explicit_locale() {
+    if LOCALES[..] != ["en", "fr"] {
+        return;
+    }
+    // The current locale may be changed by another test meanwhile: an explicit locale ignores it.
+    let french = match_locale("fr-CA").unwrap();
+    let english = match_locale("en-US").unwrap();
+
+    assert_eq!(translate!(locale = french, "greeting"), "Bonjour");
+    assert_eq!(translate!(locale = english, "greeting"), "Hello");
+    assert_eq!(
+        translate!(locale = french, c"greeting").to_bytes(),
+        b"Bonjour"
+    );
+    assert_eq!(
+        translate_plural!(locale = french, "files", 0),
+        "{count} fichier"
+    );
+    assert_eq!(
+        translate_select!(locale = french, "replied", "female"),
+        "Elle a répondu"
+    );
+    let buffer = written(|buffer| translate_write!(buffer, locale = french, "with_arg", 42));
+    assert_eq!(&buffer.bytes[..buffer.length], "Valeur : 42".as_bytes());
+    let buffer = written(|buffer| {
+        write!(
+            buffer,
+            "{}",
+            translate_args!(locale = english, "with_arg", 7)
+        )
+    });
+    assert_eq!(&buffer.bytes[..buffer.length], "Value: 7".as_bytes());
+    assert_eq!(
+        translate!(locale = LOCALES.len(), "greeting"),
+        translate!(locale = DEFAULT_LOCALE_INDEX, "greeting"),
+        "an unknown index selects the default locale"
+    );
 }

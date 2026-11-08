@@ -306,10 +306,24 @@ fn localized(
     input: TokenStream2,
     catalogs: &Catalogs,
     expand: Expansion,
-    combine: fn(Vec<TokenStream2>) -> TokenStream2,
+    combine: Combination,
+) -> syn::Result<TokenStream2> {
+    let (input, locale) = take_locale(input)?;
+    localized_in(input, locale.as_ref(), catalogs, expand, combine)
+}
+
+/// Combines the expansions of each embedded locale, selected by an index expression.
+type Combination = fn(Vec<TokenStream2>, TokenStream2) -> TokenStream2;
+
+fn localized_in(
+    input: TokenStream2,
+    locale: Option<&syn::Expr>,
+    catalogs: &Catalogs,
+    expand: Expansion,
+    combine: Combination,
 ) -> syn::Result<TokenStream2> {
     if !catalogs.multiple {
-        return expand(input, &catalogs.catalogs[0]);
+        return Ok(evaluating(locale, expand(input, &catalogs.catalogs[0])?));
     }
     let mut values = Vec::new();
     let mut errors: Option<syn::Error> = None;
@@ -324,18 +338,77 @@ fn localized(
     }
     match errors {
         Some(errors) => Err(errors),
-        None if values.len() == 1 => Ok(values.remove(0)),
-        None => Ok(combine(values)),
+        None if values.len() == 1 => Ok(evaluating(locale, values.remove(0))),
+        None => Ok(combine(values, selected_index(locale))),
     }
 }
 
-fn combine_array(values: Vec<TokenStream2>) -> TokenStream2 {
-    let index = locale_index();
+/// The index of the locale to translate into: the explicit `locale = …` option, or the
+/// current locale.
+fn selected_index(locale: Option<&syn::Expr>) -> TokenStream2 {
+    match locale {
+        Some(locale) => quote! { ::embedded_i18n::__locale_index(#locale) },
+        None => locale_index(),
+    }
+}
+
+/// With a single embedded locale there is nothing to select, but an explicit locale is still
+/// evaluated, so it is type-checked and its side effects and borrows stay the same.
+fn evaluating(locale: Option<&syn::Expr>, value: TokenStream2) -> TokenStream2 {
+    match locale {
+        Some(locale) => quote! { { let _: usize = #locale; #value } },
+        None => value,
+    }
+}
+
+/// Removes the `locale = <index>` option from a macro's arguments. Like `context`, it must come
+/// before the message key, so named format arguments called `locale` are left alone.
+fn take_locale(input: TokenStream2) -> syn::Result<(TokenStream2, Option<syn::Expr>)> {
+    use proc_macro2::TokenTree;
+    use syn::parse::Parser;
+
+    let parser = |stream: ParseStream| -> syn::Result<(TokenStream2, Option<syn::Expr>)> {
+        let mut kept = TokenStream2::new();
+        let mut locale: Option<syn::Expr> = None;
+        let mut at_argument_start = true;
+        while !stream.is_empty() {
+            if at_argument_start {
+                if stream.peek(LitStr) || stream.peek(LitCStr) {
+                    break;
+                }
+                if stream.peek(syn::Ident)
+                    && stream.peek2(syn::Token![=])
+                    && !stream.peek2(syn::Token![==])
+                    && stream.fork().parse::<syn::Ident>()? == "locale"
+                {
+                    let option: syn::Ident = stream.parse()?;
+                    stream.parse::<syn::Token![=]>()?;
+                    let value: syn::Expr = stream.parse()?;
+                    if locale.is_some() {
+                        return Err(syn::Error::new(option.span(), "`locale` is given twice"));
+                    }
+                    locale = Some(value);
+                    if !stream.is_empty() {
+                        stream.parse::<syn::Token![,]>()?;
+                    }
+                    continue;
+                }
+            }
+            let token: TokenTree = stream.parse()?;
+            at_argument_start = matches!(&token, TokenTree::Punct(punct) if punct.as_char() == ',');
+            kept.extend(std::iter::once(token));
+        }
+        kept.extend(stream.parse::<TokenStream2>()?);
+        Ok((kept, locale))
+    };
+    parser.parse2(input)
+}
+
+fn combine_array(values: Vec<TokenStream2>, index: TokenStream2) -> TokenStream2 {
     quote! { (&[#(#values),*])[#index] }
 }
 
-fn combine_match(mut values: Vec<TokenStream2>) -> TokenStream2 {
-    let index = locale_index();
+fn combine_match(mut values: Vec<TokenStream2>, index: TokenStream2) -> TokenStream2 {
     let last = values.pop();
     let indexes = 0..values.len();
     quote! {
@@ -347,12 +420,16 @@ fn combine_match(mut values: Vec<TokenStream2>) -> TokenStream2 {
 }
 
 fn expand_args_localized(input: TokenStream2, catalogs: &Catalogs) -> syn::Result<TokenStream2> {
-    if !catalogs.multiple {
+    let (input, locale) = take_locale(input)?;
+    // `format_args!` borrows temporaries, so it cannot be wrapped in a block that evaluates an
+    // explicit locale: that case formats through a closure even with a single locale.
+    if !catalogs.multiple && locale.is_none() {
         return expand_args(input, &catalogs.catalogs[0]);
     }
     let formatter = proc_macro2::Ident::new("formatter", Span::mixed_site());
-    let body = localized(
+    let body = localized_in(
         quote! { #formatter, #input },
+        locale.as_ref(),
         catalogs,
         expand_write,
         combine_match,
@@ -2100,6 +2177,65 @@ mod tests {
             .unwrap()
             .to_string()
             .contains("\"fichiers\"")
+        );
+    }
+
+    #[test]
+    fn takes_the_locale_option_before_the_key() {
+        let (rest, locale) = take_locale(quote! { locale = user.locale, "greeting" }).unwrap();
+        assert_eq!(rest.to_string(), quote! { "greeting" }.to_string());
+        assert_eq!(
+            quote! { #locale }.to_string(),
+            quote! { user.locale }.to_string()
+        );
+
+        let (rest, locale) =
+            take_locale(quote! { output, context = "menu", locale = pick::<A, B>(1), "Open", 2 })
+                .unwrap();
+        assert_eq!(
+            rest.to_string(),
+            quote! { output, context = "menu", "Open", 2 }.to_string()
+        );
+        assert!(locale.is_some());
+
+        let input = quote! { output, "greeting", locale = "fr" };
+        let (rest, locale) = take_locale(input.clone()).unwrap();
+        assert_eq!(
+            rest.to_string(),
+            input.to_string(),
+            "format arguments are kept"
+        );
+        assert!(locale.is_none());
+
+        assert!(take_locale(quote! { locale = 0, locale = 1, "greeting" }).is_err());
+    }
+
+    #[test]
+    fn explicit_locale_selects_by_index() {
+        let tokens = localized(
+            quote! { locale = index, "greeting" },
+            &english_and_french(),
+            expand,
+            combine_array,
+        )
+        .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                (&["Hello {name}", "Bonjour {name}"])[::embedded_i18n::__locale_index(index)]
+            }
+            .to_string()
+        );
+        let tokens = localized(
+            quote! { locale = index, "greeting" },
+            &single(catalog(&[("greeting", "Bonjour")])),
+            expand,
+            combine_array,
+        )
+        .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! { { let _: usize = index; "Bonjour" } }.to_string()
         );
     }
 

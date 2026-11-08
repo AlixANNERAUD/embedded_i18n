@@ -165,6 +165,68 @@ pub fn set_locale(locale: &str) -> Result<(), UnknownLocale> {
     set_locale_index(find_locale(locale).ok_or(UnknownLocale)?)
 }
 
+/// Returns the index in [`LOCALES`] of the embedded locale that best serves a
+/// requested one, such as a language tag from an `Accept-Language` header or a
+/// user setting: the locale itself, then its parents (`fr-CA` for `fr-CA-x`,
+/// then `fr`), then any embedded locale of the same language (`fr-FR` for
+/// `fr`).
+///
+/// Pass the result to the `locale` option of the translation macros to
+/// translate into it without changing the current locale, for example once per
+/// request in a server.
+///
+/// ```
+/// assert_eq!(embedded_i18n::match_locale("en-GB"), Some(0));
+/// assert_eq!(embedded_i18n::match_locale("tlh"), None);
+/// ```
+pub fn match_locale(requested: &str) -> Option<usize> {
+    best_match(&LOCALES, requested)
+}
+
+fn best_match(locales: &[&str], requested: &str) -> Option<usize> {
+    let requested = requested.trim_ascii();
+    if requested.is_empty() {
+        return None;
+    }
+    let position = |wanted: &str| {
+        locales
+            .iter()
+            .position(|locale| same_locale(locale, wanted))
+    };
+    let mut candidate = requested;
+    loop {
+        if let Some(index) = position(candidate) {
+            return Some(index);
+        }
+        match candidate.rfind(['-', '_']) {
+            Some(end) => candidate = &candidate[..end],
+            None => break,
+        }
+    }
+    locales
+        .iter()
+        .position(|locale| same_locale(language(locale), candidate))
+}
+
+fn language(locale: &str) -> &str {
+    match locale.find(['-', '_']) {
+        Some(end) => &locale[..end],
+        None => locale,
+    }
+}
+
+/// Clamps a locale index given to the `locale` option of the macros: an index
+/// outside [`LOCALES`] selects the default locale.
+#[doc(hidden)]
+#[inline]
+pub const fn __locale_index(index: usize) -> usize {
+    if index < LOCALE_COUNT {
+        index
+    } else {
+        DEFAULT_LOCALE_INDEX
+    }
+}
+
 #[doc(hidden)]
 pub struct __FormatWith<F>(pub F);
 
@@ -193,6 +255,27 @@ mod tests {
     fn compares_locales_loosely() {
         assert!(same_locale("fr_CA", "FR-ca"));
         assert!(!same_locale("fr", "fr-CA"));
+    }
+
+    #[test]
+    fn matches_requested_locales() {
+        let locales = ["en", "fr-FR", "pt_BR", "zh-Hant"];
+        assert_eq!(best_match(&locales, "fr-fr"), Some(1));
+        assert_eq!(best_match(&locales, "en-GB"), Some(0));
+        assert_eq!(best_match(&locales, "en-Latn-US"), Some(0));
+        assert_eq!(best_match(&locales, "fr"), Some(1));
+        assert_eq!(best_match(&locales, "fr-CA"), Some(1));
+        assert_eq!(best_match(&locales, "pt-BR"), Some(2));
+        assert_eq!(best_match(&locales, " zh-Hant-TW "), Some(3));
+        assert_eq!(best_match(&locales, "de"), None);
+        assert_eq!(best_match(&locales, ""), None);
+        assert_eq!(best_match(&locales, "*"), None);
+    }
+
+    #[test]
+    fn clamps_explicit_indexes() {
+        assert_eq!(__locale_index(0), 0);
+        assert_eq!(__locale_index(LOCALE_COUNT), DEFAULT_LOCALE_INDEX);
     }
 
     #[test]

@@ -118,10 +118,11 @@ translate_write!(&mut display, "Hello {name}, you have {count} messages")?;
 
 **Fallback chains and strict builds**: `fr-CA` → `fr` → `en`, and `EMBEDDED_I18N_STRICT=1` to fail the build on untranslated strings. [Configuration][guide-configuration], [Coverage][guide-coverage]
 
-**Runtime language switching** between locales embedded at build time, with one atomic and no allocation. [Guide][guide-runtime-locales]
+**Runtime language switching** between locales embedded at build time, with one atomic and no allocation, or a locale given per call, for servers answering each request in its own language. [Guide][guide-runtime-locales]
 
 ```rust
 set_locale("de")?;
+let title = translate!(locale = match_locale("fr-CA").unwrap_or(0), "Settings"); // per call
 ```
 
 **Localized dates and times** without `libc`: month and weekday names, AM/PM, date patterns and UTC offsets for 30 languages. [Guide][guide-date-time]
