@@ -202,7 +202,9 @@ pub use embedded_i18n_macros::__expand;
 /// - `count = <integer>`: selects the plural form, and is the `{count}`
 ///   placeholder;
 /// - `select = <expr>`: selects a variant (`replied.male`, `replied.other`) by
-///   `AsRef<str>`, `other` being the default;
+///   `AsRef<str>`, `other` being the default. When both `select` and `count`
+///   are given, `select` picks the variant and `count` is an ordinary
+///   argument (the `{count}` placeholder): it selects no plural form;
 /// - `name = <expr>` or `"name" => <expr>`: an argument, the value of the
 ///   `{name}` (or rust-i18n `%{name}`) placeholder, optionally followed by a
 ///   format specification: `sn = 123 : {:08}`.
