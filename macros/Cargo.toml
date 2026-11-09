@@ -14,7 +14,7 @@ quote = "1.0"
 proc-macro2 = "1.0"
 serde_json = { version = "1.0", optional = true }
 yaml-rust2 = { version = "0.13", optional = true }
-toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde", "std"] }
+toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
 fluent-syntax = { version = "0.12", optional = true }
 
 [dev-dependencies]
@@ -26,7 +26,7 @@ backend-json = ["dep:serde_json"]
 backend-po = []
 backend-mo = []
 backend-yaml = ["dep:yaml-rust2"]
-backend-toml = ["dep:toml"]
+backend-toml = []
 backend-fluent = ["dep:fluent-syntax"]
 
 [lib]

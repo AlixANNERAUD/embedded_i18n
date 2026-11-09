@@ -1,0 +1,1 @@
+//! Placeholder templates of translations.
