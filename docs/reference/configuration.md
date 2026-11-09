@@ -23,6 +23,7 @@ embedded_i18n::i18n!();
 ```
 
 Each crate, integration test, example and doctest that translates is a separate crate, and calls [`i18n!`] once.
+A doctest with several available locales is marked `standalone_crate` and has an explicit `fn main`, with [`i18n!`] at its top level.
 
 ## Options
 
@@ -60,6 +61,15 @@ EMBEDDED_I18N_LOCALE=fr cargo build --release
 ```
 
 They can be set in the `[env]` table of `.cargo/config.toml`.
+
+The overrides apply to every crate of the build that calls [`i18n!`], dependencies included.
+`EMBEDDED_I18N_LOCALE` adapts to each crate:
+
+- without configured `available_locales`, the requested locale becomes the only one embedded;
+- with configured `available_locales` (in the arguments or the metadata) that contain it, it becomes the `default_locale`;
+- with configured `available_locales` that do not contain it, the `default_locale` is the available locale with the same [runtime identifier][explanation-runtime-locale-model] (`fr_ca` for `fr-CA`), else the first one of the same language (the language-only locale first), else the crate's own `default_locale`.
+
+`EMBEDDED_I18N_LOCALES` replaces the `available_locales` of every crate as given, and `EMBEDDED_I18N_LOCALE`, or else the crate's own `default_locale`, must be one of them.
 Every other setting lives in the arguments or the metadata, so it is versioned with the code.
 A build script cannot see the arguments of [`i18n!`], but it can read these variables.
 
@@ -123,7 +133,8 @@ Nothing is added to the binary, and there is nothing to call besides [`i18n!`].
 A locale file created after the build, such as a new `fr-CA.json` next to an existing `fr.json`, is not seen until the crate is rebuilt for another reason, because only existing files are tracked.
 To also pick up new files, add a build script to the crate calling [`i18n!`]:
 
-```rust,no_run
+```rust,ignore
+// build.rs
 fn main() {
     println!("cargo:rerun-if-changed=locales");
 }
@@ -144,7 +155,8 @@ See [How It Works][explanation-how-it-works].
 
 ## Compile Errors
 
-Errors are reported on the [`i18n!`] call.
+Errors are reported on the [`i18n!`] call, except the errors of a misplaced call, which rustc reports on the macros using it.
+A second call in a submodule makes the macros ambiguous, and a call outside the crate root with several available locales (in `fn main`, in a module, or in a doctest that is not a `standalone_crate`) defines the resolution function out of the crate root, where the macros look for it.
 
 | Mistake | Message |
 | --- | --- |
@@ -160,9 +172,34 @@ Errors are reported on the [`i18n!`] call.
 | Two available locales with the same [runtime identifier][explanation-runtime-locale-model] | `available locales "fr-CA" and "fr_ca" have the same runtime identifier` |
 | Missing locale directory | `locales directory not found: /path/to/crate/i18n` |
 | A second call in the same crate | ``the name `EMBEDDED_I18N_I18N_IS_CALLED_ONCE_PER_CRATE` is defined multiple times`` |
+| A second call in a submodule | ``error[E0659]: `embedded_i18n_requires_i18n_at_the_crate_root` is ambiguous`` |
+| A call outside the crate root with several locales | ``error[E0425]: cannot find function `__embedded_i18n_resolve` in the crate root`` |
 
 ```rust,compile_fail
 embedded_i18n::i18n!(available_locales = ["fr-CA", "fr_ca"], default_locale = "fr-CA");
+```
+
+```rust,compile_fail,E0659
+embedded_i18n::i18n!("locales");
+
+mod screen {
+    embedded_i18n::i18n!("locales");
+
+    pub fn title() -> &'static str {
+        embedded_i18n::t!("greeting")
+    }
+}
+
+fn main() {
+    let _ = screen::title();
+}
+```
+
+```rust,compile_fail,E0425
+fn main() {
+    embedded_i18n::i18n!("locales", available_locales = ["en", "fr"]);
+    let _ = embedded_i18n::t!("greeting");
+}
 ```
 
 Errors of the locale files themselves are reported on the call too, see [Locale Files][reference-locale-files].

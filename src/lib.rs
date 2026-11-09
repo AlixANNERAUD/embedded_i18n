@@ -60,8 +60,8 @@
 //! | `bidi_isolation = true` | `bidi-isolation` | `false` | Isolates placeholders of right-to-left locales |
 //!
 //! The `EMBEDDED_I18N_LOCALE` and `EMBEDDED_I18N_LOCALES` (comma separated)
-//! environment variables override `default_locale` and `available_locales`, to
-//! build one firmware per language. Cargo rebuilds the crate when a locale
+//! environment variables override `default_locale` and `available_locales` in
+//! every crate of the build, to build one firmware per language. Cargo rebuilds the crate when a locale
 //! file, `Cargo.toml` or one of these variables changes.
 //!
 //! Locales are normalized like BCP 47 tags and resolved from the most specific
@@ -329,14 +329,16 @@ macro_rules! available_locales {
 /// `LC_MESSAGES` and `LANG` environment variables, as a BCP 47 style tag
 /// (`fr_FR.UTF-8` becomes `fr-FR`). Available with the `std` feature.
 ///
-/// The first variable that holds a usable value wins; the `C` and `POSIX`
-/// locales are ignored. Returns `None` when no variable is set.
+/// The first variable that holds a usable value wins; empty values and the
+/// `C` and `POSIX` locales are ignored. Returns `None` when no variable holds a
+/// usable value: each one is unset, empty, `C` or `POSIX`.
 ///
 /// This reads the POSIX environment only. Windows and macOS GUI applications
 /// should use the [`sys-locale`](https://crates.io/crates/sys-locale) crate
 /// instead, and pass its result to [`set_locale`].
 ///
-/// ```ignore
+/// ```
+/// # #[cfg(feature = "std")]
 /// if let Some(locale) = embedded_i18n::system_locale() {
 ///     embedded_i18n::set_locale(&locale);
 /// }

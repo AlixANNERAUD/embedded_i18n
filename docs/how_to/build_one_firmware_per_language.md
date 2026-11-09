@@ -22,6 +22,10 @@ EMBEDDED_I18N_LOCALE=fr EMBEDDED_I18N_LOCALES=en,fr,de cargo build --release
 
 `EMBEDDED_I18N_LOCALE` must then be one of the listed locales.
 
+The variables apply to every crate of the build that calls [`i18n!`], dependencies included, so the whole firmware switches language at once.
+A crate whose `available_locales` lacks the requested locale keeps building, with its closest locale or its own `default_locale`.
+`EMBEDDED_I18N_LOCALES` replaces the locales of every crate, so set it only when each crate can translate into the listed locales, see [Configuration][reference-configuration].
+
 ## Set the Locale for Your Team
 
 Set the variable once in `.cargo/config.toml`, to share it with your team and CI:
