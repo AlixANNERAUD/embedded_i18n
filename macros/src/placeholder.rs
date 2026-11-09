@@ -1,6 +1,7 @@
 //! Placeholder templates of translations.
 
 /// A translation converted to a Rust format string.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Template {
     /// Rust format string with named placeholders only.
     pub format: String,
@@ -148,6 +149,9 @@ fn record(placeholders: &mut Vec<String>, name: &str) {
 }
 
 fn is_identifier(name: &str) -> bool {
+    if name == "_" {
+        return false;
+    }
     let mut bytes = name.bytes();
     matches!(bytes.next(), Some(b) if b.is_ascii_alphabetic() || b == b'_')
         && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
@@ -214,6 +218,10 @@ mod tests {
         assert_eq!(
             template("{a-b}").err().unwrap(),
             "invalid placeholder {a-b} in \"{a-b}\""
+        );
+        assert_eq!(
+            template("{_}").err().unwrap(),
+            "invalid placeholder {_} in \"{_}\""
         );
     }
 
