@@ -47,6 +47,7 @@ fn farewell_translation() {
 
 #[test]
 fn translation_with_placeholder() {
+    assert_eq!(t!("with_arg"), "Value: {value}");
     assert_eq!(t!("with_arg", value = 42).to_string(), "Value: 42");
 }
 
@@ -224,14 +225,10 @@ fn locale_macros_describe_the_crate() {
     assert_eq!(locale!(), "en");
 }
 
-// BUG: the macros crate wraps each argument in an invisible group (`grouped`)
-// that rustc does not honor after the `&` it is prefixed with, so
-// `count = 2 + 3` expands to `*&2 + 3` and fails to compile with E0614
-// ("type `{integer}` cannot be dereferenced"). A compile error cannot be
-// `#[ignore]`d, so the test is compiled out until the macro is fixed.
+// TODO(Task 6 fix round 1): re-enable once `count = 2 + 3` keeps its precedence
+// in the expansion (E0614 today). A compile error cannot be `#[ignore]`d.
 #[cfg(any())]
 #[test]
-#[ignore = "BUG: count = <binary expression> does not compile (E0614)"]
 fn temporaries_used_inline() {
     let mut buffer = Buffer::new();
     write!(buffer, "{}", t!("files", count = 2 + 3)).unwrap();
@@ -268,9 +265,12 @@ fn plural_form_without_count_placeholder() {
 #[test]
 fn translations_are_const() {
     const TITLE: &str = t!("greeting");
+    const MENU: &str = t!("Open", context = "menu");
     assert_eq!(TITLE, "Hello");
+    assert_eq!(MENU, "Open (menu)");
 }
 
+// Only meaningful under `EMBEDDED_I18N_LOCALE=fr`, which a dedicated CI step sets.
 #[test]
 fn environment_override() {
     if option_env!("EMBEDDED_I18N_LOCALE") == Some("fr") {

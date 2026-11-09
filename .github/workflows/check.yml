@@ -39,6 +39,9 @@ jobs:
       - name: Test without alloc
         run: cargo test --workspace --no-default-features --features backend-json,backend-po
 
+      - name: Test the PO backend alone
+        run: cargo test --test backend_po --no-default-features --features backend-po
+
       - name: Test the environment override
         run: EMBEDDED_I18N_LOCALE=fr cargo test --test single_locale environment_override
 

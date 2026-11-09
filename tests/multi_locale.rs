@@ -46,6 +46,7 @@ fn switches_locale_at_runtime() {
     assert_eq!(t!("missing_in_french"), "Only in English");
     assert_eq!(t!("files", count = 0).to_string(), "0 fichier");
     assert_eq!(t!("replied", select = "female"), "Elle a répondu");
+    assert_eq!(t!("with_arg"), "Valeur : {value}");
     let buffer = written(|buffer| write!(buffer, "{}", t!("with_arg", value = 42)));
     assert_eq!(&buffer.bytes[..buffer.length], "Valeur : 42".as_bytes());
     let buffer = written(|buffer| write!(buffer, "{}", t!("with_arg", value = 7)));
