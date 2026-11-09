@@ -38,7 +38,7 @@ ITEM = context = <string literal>
 
 Without named arguments and without `count`, the result is a `&'static str` (a `&'static CStr` with a C string key).
 `select`, `context` and `locale` keep this type.
-With a single embedded locale, it is a literal, usable in `const` and `static` items:
+With a single embedded locale, a plain key or a `context` gives a literal, usable in `const` and `static` items:
 
 ```rust
 use embedded_i18n::t;
@@ -53,6 +53,7 @@ assert_eq!(FAREWELL, "Goodbye");
 ```
 
 With several embedded locales, it is a runtime value, which cannot initialize a `const` or `static` item; a literal `locale = "fr"` keeps it a literal.
+`select` and a non-literal `locale` choose the translation at runtime, so they are never usable in `const` and `static` items.
 Without arguments, the translation is returned as written in the file, placeholders included.
 
 With named arguments or `count`, the result implements [`core::fmt::Display`] and formats on demand, without allocation:
@@ -173,7 +174,7 @@ assert_eq!(t!("files", count = 5u32).to_string(), "5 files");
 assert_eq!(t!("files_with_zero", count = 0).to_string(), "No files");
 ```
 
-- The count can be any integer type. Negative counts use their absolute value. Fractional counts (`1.5 files`) are not supported.
+- The count can be any integer type, or a reference to one. Negative counts use their absolute value, and `i128` and `u128` values beyond `u64::MAX` select the form of `u64::MAX`. Any other type, such as a float (`count = 2.5`) or a `bool`, is a compile error: fractional counts are not supported.
 - If the message has no plural forms, `count` is an ordinary named argument that only fills `{count}`.
 - Other named arguments can follow: `t!("files", count = n, folder = name)`.
 - A form that does not use an argument, such as a singular form without `{count}`, is allowed.

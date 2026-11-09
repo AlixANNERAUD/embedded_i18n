@@ -34,8 +34,8 @@ Results with arguments are written into any [`core::fmt::Write`]: a display driv
 
 ## Targets
 
-CI builds the crate for `thumbv7em-none-eabihf` (Cortex-M4F) with the JSON and PO backends, with and without `alloc`.
-The runtime locale selection only uses atomic loads and stores, so it also builds for targets without compare-and-swap, such as `thumbv6m-none-eabi` (Cortex-M0).
+CI builds the crate for `thumbv7em-none-eabihf` (Cortex-M4F) with the JSON and PO backends, with and without `alloc`, and for `thumbv6m-none-eabi` (Cortex-M0) with the JSON backend.
+The runtime locale selection only uses atomic loads and stores, so it builds for targets without compare-and-swap, such as `thumbv6m-none-eabi`.
 Any target with `core` and 32-bit atomic loads and stores works.
 
 ## Minimum Supported Rust Version

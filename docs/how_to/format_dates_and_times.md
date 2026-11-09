@@ -23,7 +23,25 @@ assert_eq!(output, "Tuesday 13 October 2026, 09:46:40 AM");
 ```
 
 With a single embedded locale, the locale is resolved at compile time, and only its month and weekday names end up in the firmware.
-With [several embedded locales][how-to-switch-language], the same code follows the current locale.
+
+With [several embedded locales][how-to-switch-language], [`locale!`] reads the current locale at runtime and is not `const`.
+Build the formatter with `let` where you format, so that it follows the current locale:
+
+```rust,standalone_crate
+use embedded_i18n::{date_time_locale, set_locale, DateTimeFormatter};
+
+embedded_i18n::i18n!("locales", default_locale = "en", available_locales = ["en", "fr"]);
+
+fn main() -> core::fmt::Result {
+    set_locale("fr");
+    let formatter = DateTimeFormatter::new(date_time_locale(embedded_i18n::locale!()));
+
+    let mut output = String::new();
+    formatter.write(&mut output, 1_791_884_800, "%A %d %B %Y")?;
+    assert_eq!(output, "mardi 13 octobre 2026");
+    Ok(())
+}
+```
 
 ## Use a Local Time Zone
 
@@ -86,5 +104,6 @@ See [Date and Time][reference-date-time] for every token and the supported langu
 [`DateTimeFormatter::new`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.DateTimeFormatter.html#method.new
 [`DateTimeFormatter::display`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.DateTimeFormatter.html#method.display
 [`DateTimeFormatter::format`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.DateTimeFormatter.html#method.format
+[`locale!`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.locale.html
 [`date_time_locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.date_time_locale.html
 [`core::fmt::Display`]: https://doc.rust-lang.org/core/fmt/trait.Display.html
