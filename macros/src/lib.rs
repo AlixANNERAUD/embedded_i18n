@@ -126,6 +126,7 @@ enum Plural<'a> {
         forms: Vec<(Category, &'a str)>,
     },
     Indexed {
+        locale: &'a str,
         rule: Option<&'a Expression>,
         forms: &'a [String],
     },
@@ -172,7 +173,8 @@ impl Catalog {
         syn::Error::new(span, message)
     }
 
-    fn lookup(&self, keys: &[String], strict: bool) -> Option<&str> {
+    /// The translation of the first key found, and the locale that supplies it.
+    fn lookup(&self, keys: &[String], strict: bool) -> Option<(&str, &str)> {
         self.find(keys, strict, |value| !value.is_empty())
             .or_else(|| self.find(keys, strict, |_| true))
     }
@@ -182,6 +184,7 @@ impl Catalog {
             keys.iter().find_map(|key| {
                 if let Some(forms) = locale.translations.plurals.get(key) {
                     return Some(Plural::Indexed {
+                        locale: &locale.name,
                         rule: locale.translations.plural_rule.as_ref(),
                         forms,
                     });
@@ -205,7 +208,8 @@ impl Catalog {
         })
     }
 
-    fn select(&self, keys: &[String], strict: bool) -> Option<Vec<(&str, &str)>> {
+    /// The variants of a select message, and the locale that supplies them.
+    fn select(&self, keys: &[String], strict: bool) -> Option<(&str, Vec<(&str, &str)>)> {
         self.scope(strict).find_map(|locale| {
             keys.iter().find_map(|key| {
                 let prefix = format!("{}.", key);
@@ -228,12 +232,17 @@ impl Catalog {
                     })
                     .collect();
                 variants.sort();
-                Some(variants)
+                Some((locale.name.as_str(), variants))
             })
         })
     }
 
-    fn find(&self, keys: &[String], strict: bool, accept: impl Fn(&str) -> bool) -> Option<&str> {
+    fn find(
+        &self,
+        keys: &[String],
+        strict: bool,
+        accept: impl Fn(&str) -> bool,
+    ) -> Option<(&str, &str)> {
         self.scope(strict).find_map(|locale| {
             keys.iter().find_map(|key| {
                 locale
@@ -242,6 +251,7 @@ impl Catalog {
                     .get(key)
                     .map(String::as_str)
                     .filter(|value| accept(value))
+                    .map(|value| (locale.name.as_str(), value))
             })
         })
     }
@@ -608,7 +618,7 @@ fn expand_t(
     if call.returns_str() {
         expand_str(catalogs, call, &name, target, &indexes)
     } else {
-        expand_display(config, catalogs, call, &name, target, &indexes)
+        expand_display(catalogs, call, &name, target, &indexes)
     }
 }
 
@@ -621,7 +631,7 @@ fn expand_str(
     indexes: &[usize],
 ) -> syn::Result<TokenStream2> {
     let select = call.select.as_ref().map(parenthesized);
-    let arm = |text: &str| literal(&call.key, text, name);
+    let arm = |_: &str, text: &str| literal(&call.key, text, name);
     let mut values = each(indexes, |index| {
         selection(call, name, &catalogs[index], select.as_ref(), None, &arm)
     })?;
@@ -641,7 +651,6 @@ fn expand_str(
 
 /// Expands a `t!` call with arguments or `count` to a value implementing `Display`.
 fn expand_display(
-    config: &Config,
     catalogs: &[Result<Catalog, String>],
     call: &Call,
     name: &str,
@@ -701,8 +710,8 @@ fn expand_display(
     let select = call.select.as_ref().map(|_| select.to_token_stream());
 
     let mut bodies = each(indexes, |position| {
-        let locale = config.available_locales[position].as_str();
-        let arm = |text: &str| -> syn::Result<TokenStream2> {
+        // `locale` supplies `text`: the expanded locale or one of its fallbacks.
+        let arm = |locale: &str, text: &str| -> syn::Result<TokenStream2> {
             let template = placeholder::template(text).map_err(|error| {
                 syn::Error::new(
                     span,
@@ -759,7 +768,7 @@ fn selection(
     catalog: &Result<Catalog, String>,
     select: Option<&TokenStream2>,
     count: Option<&Ident>,
-    arm: &dyn Fn(&str) -> syn::Result<TokenStream2>,
+    arm: &dyn Fn(&str, &str) -> syn::Result<TokenStream2>,
 ) -> syn::Result<TokenStream2> {
     let span = call.key.span();
     let catalog = catalog
@@ -783,14 +792,14 @@ fn selection(
         }
     }
 
-    let value = catalog.lookup(&keys, catalog.strict).ok_or_else(|| {
+    let (locale, value) = catalog.lookup(&keys, catalog.strict).ok_or_else(|| {
         catalog.not_found(
             span,
             format!("translation for {}", call.describe(name)),
             catalog.lookup(&keys, false).is_some(),
         )
     })?;
-    arm(value)
+    arm(locale, value)
 }
 
 fn literal(key: &Key, value: &str, name: &str) -> syn::Result<TokenStream2> {
@@ -817,7 +826,7 @@ fn plural_selection(
     call: &Call,
     name: &str,
     catalog: &Catalog,
-    arm: &dyn Fn(&str) -> syn::Result<TokenStream2>,
+    arm: &dyn Fn(&str, &str) -> syn::Result<TokenStream2>,
 ) -> syn::Result<TokenStream2> {
     let span = call.key.span();
     let n = Ident::new("n", Span::mixed_site());
@@ -832,12 +841,16 @@ fn plural_selection(
     })?;
 
     match plural {
-        Plural::Indexed { rule, forms } => {
+        Plural::Indexed {
+            locale,
+            rule,
+            forms,
+        } => {
             let germanic = Expression::germanic();
             let index = rule.unwrap_or(&germanic).tokens(&n);
             let arms = forms
                 .iter()
-                .map(|form| arm(form))
+                .map(|form| arm(locale, form))
                 .collect::<syn::Result<Vec<_>>>()?;
             let first = &arms[0];
             let indexes = (0..arms.len() as u64).collect::<Vec<_>>();
@@ -896,11 +909,11 @@ fn plural_selection(
                     branches.push((condition.tokens(&n), value));
                 }
             }
-            let other = arm(form(Category::Other).unwrap_or_default())?;
+            let other = arm(locale, form(Category::Other).unwrap_or_default())?;
             let conditions = branches.iter().map(|(condition, _)| condition);
             let values = branches
                 .iter()
-                .map(|(_, value)| arm(value))
+                .map(|(_, value)| arm(locale, value))
                 .collect::<syn::Result<Vec<_>>>()?;
             Ok(quote! {
                 #(if #conditions { #values } else)* { #other }
@@ -914,11 +927,11 @@ fn select_selection(
     name: &str,
     catalog: &Catalog,
     value: &TokenStream2,
-    arm: &dyn Fn(&str) -> syn::Result<TokenStream2>,
+    arm: &dyn Fn(&str, &str) -> syn::Result<TokenStream2>,
 ) -> syn::Result<TokenStream2> {
     let span = call.key.span();
     let keys = call.keys(name);
-    let variants = catalog.select(&keys, catalog.strict).ok_or_else(|| {
+    let (locale, variants) = catalog.select(&keys, catalog.strict).ok_or_else(|| {
         catalog.not_found(
             span,
             format!(
@@ -933,7 +946,7 @@ fn select_selection(
     let mut patterns = Vec::new();
     let mut values = Vec::new();
     for (variant, text) in variants {
-        let value = arm(text)?;
+        let value = arm(locale, text)?;
         if variant == "other" {
             other = Some(value);
         } else {
@@ -1026,7 +1039,7 @@ mod tests {
         feature = "backend-fluent"
     ))]
     fn get<'a>(catalog: &'a Catalog, key: &str) -> &'a str {
-        catalog.lookup(&[key.to_string()], false).unwrap()
+        catalog.lookup(&[key.to_string()], false).unwrap().1
     }
 
     /// A resolved configuration embedding `locales`, the first one being the default.
@@ -1592,6 +1605,53 @@ mod tests {
                 }
             }
             .to_string()
+        );
+    }
+
+    #[test]
+    fn template_errors_name_the_locale_that_supplies_the_text() {
+        let catalog = Ok(Catalog {
+            path: PathBuf::from("locales"),
+            chain: vec!["fr".to_string(), "en".to_string()],
+            primary: vec!["fr".to_string()],
+            strict: false,
+            files: Vec::new(),
+            locales: vec![
+                Locale {
+                    name: "fr".to_string(),
+                    translations: messages(&[("farewell", "Au revoir {name}")]),
+                },
+                Locale {
+                    name: "en".to_string(),
+                    translations: messages(&[
+                        ("greeting", "Hello {name}"),
+                        ("broken", "Hello {name"),
+                        ("files.one", "{count} file"),
+                        ("files.other", "{total} files"),
+                        ("replied.other", "They replied to {name}"),
+                    ]),
+                },
+            ],
+        });
+        assert_eq!(
+            error(quote! { "farewell", who = x }, &catalog),
+            "translation of \"farewell\" in locale \"fr\" uses the placeholder {name}, which is not an argument of t!"
+        );
+        assert_eq!(
+            error(quote! { "greeting", who = x }, &catalog),
+            "translation of \"greeting\" in locale \"en\" uses the placeholder {name}, which is not an argument of t!"
+        );
+        assert_eq!(
+            error(quote! { "files", count = 2 }, &catalog),
+            "translation of \"files\" in locale \"en\" uses the placeholder {total}, which is not an argument of t!"
+        );
+        assert_eq!(
+            error(quote! { "replied", select = g, who = x }, &catalog),
+            "translation of \"replied\" in locale \"en\" uses the placeholder {name}, which is not an argument of t!"
+        );
+        assert!(
+            error(quote! { "broken", name = x }, &catalog)
+                .starts_with("translation of \"broken\" in locale \"en\": "),
         );
     }
 
@@ -2255,7 +2315,7 @@ mod tests {
         };
         let catalog = load_catalog(directory.path(), "ar", "en", options).unwrap();
         assert_eq!(
-            catalog.lookup(&["hello".to_string()], false).unwrap(),
+            catalog.lookup(&["hello".to_string()], false).unwrap().1,
             "مرحبا \u{2068}{name}\u{2069}"
         );
         assert_eq!(
@@ -2263,12 +2323,12 @@ mod tests {
             "\u{2068}{count}\u{2069} ملفات"
         );
         assert_eq!(
-            catalog.lookup(&["bye".to_string()], false).unwrap(),
+            catalog.lookup(&["bye".to_string()], false).unwrap().1,
             "Bye {name}"
         );
         let catalog = load_catalog(directory.path(), "ar", "en", Options::default()).unwrap();
         assert_eq!(
-            catalog.lookup(&["hello".to_string()], false).unwrap(),
+            catalog.lookup(&["hello".to_string()], false).unwrap().1,
             "مرحبا {name}"
         );
     }
