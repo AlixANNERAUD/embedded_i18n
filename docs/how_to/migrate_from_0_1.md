@@ -1,8 +1,9 @@
-# Migrating From 0.1
+# How to Migrate From 0.1
 
-Version 0.2 replaces the `translate*!` macros and the `EMBEDDED_I18N_*` environment variables with a rust-i18n style API (see [Migrating from rust-i18n][guide-migrating-rust-i18n]): one [`i18n!`] call to configure the crate and one [`t!`] macro to translate.
+Version 0.2 replaces the `translate*!` macros and the `EMBEDDED_I18N_*` environment variables with a rust-i18n style API (see [How to Migrate From rust-i18n][how-to-migrate-rust-i18n]): one [`i18n!`] call to configure the crate and one [`t!`] macro to translate.
 The locale file formats, the plural rules and the compile-time guarantees are unchanged.
 No deprecated aliases of the 0.1 API are kept.
+This guide upgrades a crate, item by item.
 
 ## Upgrade Checklist
 
@@ -34,7 +35,7 @@ Differences to know about:
 - Placeholders must be named and arguments are never captured implicitly: `{name}` needs `name = name`.
 - Arguments are evaluated once and borrowed, so the result of [`t!`] with arguments lives as long as its arguments.
 - A placeholder without argument is a compile error for every locale, plural form and select variant, while an argument that a translation does not use is allowed.
-- The `count` option of [plural forms][guide-plurals] is also available as the `{count}` placeholder.
+- The `count` option of plural forms ([Plural Rules][reference-plural-rules]) is also available as the `{count}` placeholder.
 - `translate!` could be used as a format string (`format!(translate!("key"), ..)`): use `format!("{}", t!("key", ..))`.
 
 Before and after:
@@ -91,12 +92,12 @@ strict = true
 ```
 
 and `EMBEDDED_I18N_LOCALE=de cargo build` still overrides the default locale.
-See [Configuration][guide-configuration].
+See [Configuration][reference-configuration].
 
 ## Runtime Locales
 
 Runtime selection is enabled by `available_locales` with more than one locale, as before with `EMBEDDED_I18N_LOCALES`.
-The global locale is now a compact identifier of the requested tag instead of an index into the locales of one crate, see [Runtime Locale Selection][guide-runtime-locales].
+The global locale is now a compact identifier of the requested tag instead of an index into the locales of one crate, see [The Runtime Locale Model][explanation-runtime-locale-model] and [How to Switch Language at Runtime][how-to-switch-language].
 
 | 0.1 | 0.2 |
 | --- | --- |
@@ -116,7 +117,7 @@ The `locale = ...` option replaces the explicit locale per call that PR #62 prop
 ## Build Script Getters
 
 `get_locale`, `get_fallback_locale`, `get_locale_build` and `get_fallback_locale_build` are removed with the global build locale.
-Use [`locale!`]`()` in the firmware, and read `EMBEDDED_I18N_LOCALE` yourself in a build script, see [Unicode Ranges][guide-unicode-ranges].
+Use [`locale!`]`()` in the firmware, and read `EMBEDDED_I18N_LOCALE` yourself in a build script, see [How to Subset Fonts][how-to-subset-fonts].
 
 ## Date, Time and Text Direction
 
@@ -126,24 +127,25 @@ Use [`locale!`]`()` in the firmware, and read `EMBEDDED_I18N_LOCALE` yourself in
 | `DateTimeFormatter::new()` | `DateTimeFormatter::new(date_time_locale(locale!()))`, still resolved at compile time with a single locale |
 | `is_locale_right_to_left()` | `is_right_to_left(locale!())` |
 
-See [Date and Time][guide-date-time] and [Right-to-Left Languages][guide-right-to-left].
+See [How to Format Dates and Times][how-to-format-dates] and [How to Support Right-to-Left Languages][how-to-right-to-left].
 
 ## Cargo Features
 
 The `backend-*` and `alloc` features are unchanged.
 The `std` feature enables [`system_locale`] instead of the build script getters.
 
-[guide-configuration]: configuration.md
-[guide-migrating-rust-i18n]: migrating_from_rust_i18n.md
-[guide-plurals]: plurals.md
-[guide-runtime-locales]: runtime_locales.md
-[guide-unicode-ranges]: unicode_ranges.md
-[guide-date-time]: date_time.md
-[guide-right-to-left]: right_to_left.md
-[`i18n!`]: configuration.md
-[`t!`]: translating.md
-[`set_locale`]: runtime_locales.md
-[`locale!`]: runtime_locales.md
-[`available_locales!`]: runtime_locales.md
-[`Locale`]: runtime_locales.md
-[`system_locale`]: runtime_locales.md
+[reference-configuration]: ../reference/configuration.md
+[reference-plural-rules]: ../reference/plural_rules.md
+[how-to-migrate-rust-i18n]: migrate_from_rust_i18n.md
+[how-to-switch-language]: switch_language_at_runtime.md
+[how-to-subset-fonts]: subset_fonts.md
+[how-to-format-dates]: format_dates_and_times.md
+[how-to-right-to-left]: support_right_to_left_languages.md
+[explanation-runtime-locale-model]: ../explanation/runtime_locale_model.md
+[`i18n!`]: ../reference/configuration.md
+[`t!`]: ../reference/t_macro.md
+[`set_locale`]: ../reference/runtime_api.md
+[`locale!`]: ../reference/runtime_api.md
+[`available_locales!`]: ../reference/runtime_api.md
+[`Locale`]: ../reference/runtime_api.md
+[`system_locale`]: ../reference/runtime_api.md

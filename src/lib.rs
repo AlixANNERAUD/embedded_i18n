@@ -120,18 +120,34 @@
 //!
 //! # Guide
 //!
-//! The [`guide`] has one page per topic: [locale files](guide::locale_files),
-//! [translating](guide::translating), [message context](guide::context),
-//! [plural forms](guide::plurals), [select variants](guide::select),
-//! [formatting](guide::formatting), [rebuild tracking](guide::rebuild_tracking),
-//! [configuration](guide::configuration),
-//! [runtime locale selection](guide::runtime_locales),
-//! [translation coverage](guide::coverage),
-//! [right-to-left languages](guide::right_to_left),
-//! [pseudo-localization](guide::pseudo_localization),
-//! [date and time](guide::date_time), [Unicode ranges](guide::unicode_ranges),
-//! [`no_std` support](guide::no_std) and a
-//! [comparison with other crates](guide::comparison).
+//! The [`guide`] follows the [Diátaxis](https://diataxis.fr) structure:
+//!
+//! - **Tutorial**: [getting started](guide::tutorials::getting_started), from
+//!   an empty project to a program translated into two languages.
+//! - **How-to guides**:
+//!   [switch language at runtime](guide::how_to::switch_language_at_runtime),
+//!   [localize per request](guide::how_to::localize_per_request),
+//!   [build one firmware per language](guide::how_to::build_one_firmware_per_language),
+//!   [use gettext PO files and other formats](guide::how_to::use_gettext_po_files),
+//!   [ship complete translations](guide::how_to::ship_complete_translations),
+//!   [pseudo-localize](guide::how_to::pseudo_localize),
+//!   [support right-to-left languages](guide::how_to::support_right_to_left_languages),
+//!   [format dates and times](guide::how_to::format_dates_and_times),
+//!   [subset fonts](guide::how_to::subset_fonts),
+//!   [migrate from rust-i18n](guide::how_to::migrate_from_rust_i18n) and
+//!   [migrate from 0.1](guide::how_to::migrate_from_0_1).
+//! - **Reference**: [the `t!` macro](guide::reference::t_macro),
+//!   [configuration](guide::reference::configuration),
+//!   [locale files](guide::reference::locale_files),
+//!   [plural rules](guide::reference::plural_rules),
+//!   [runtime API](guide::reference::runtime_api),
+//!   [date and time](guide::reference::date_time),
+//!   [Unicode ranges](guide::reference::unicode_ranges) and
+//!   [features and `no_std`](guide::reference::features_and_no_std).
+//! - **Explanation**: [how it works](guide::explanation::how_it_works),
+//!   [the runtime locale model](guide::explanation::runtime_locale_model),
+//!   [design choices](guide::explanation::design_choices) and a
+//!   [comparison with other crates](guide::explanation::comparison).
 #![no_std]
 #![deny(missing_docs)]
 
