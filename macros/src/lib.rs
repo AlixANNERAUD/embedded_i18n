@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::time::SystemTime;
 
 use proc_macro::TokenStream;
 use proc_macro2::{Delimiter, Group, Ident, Literal, Span, TokenStream as TokenStream2, TokenTree};
@@ -332,8 +333,51 @@ fn load_locale(path: &Path, locale: &str) -> Result<Option<(PathBuf, Translation
 /// The catalogs of a configuration, one per available locale, in configuration order.
 type Catalogs = Arc<Vec<Result<Catalog, String>>>;
 
+/// The state of a file or directory: its modification time and length, `None`
+/// when it cannot be read.
+type FileState = Option<(Option<SystemTime>, u64)>;
+
+fn file_state(path: &Path) -> FileState {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some((metadata.modified().ok(), metadata.len()))
+}
+
+/// What loaded catalogs were read from: the state of every locale file read,
+/// and of the locales directory, whose modification time changes when a file
+/// is added or removed.
+#[derive(PartialEq, Eq)]
+struct Fingerprint {
+    directory: FileState,
+    files: Vec<(PathBuf, FileState)>,
+}
+
+impl Fingerprint {
+    fn new(directory: &Path, catalogs: &[Result<Catalog, String>]) -> Self {
+        let mut files: Vec<(PathBuf, FileState)> = Vec::new();
+        for file in catalogs.iter().flatten().flat_map(|catalog| &catalog.files) {
+            if !files.iter().any(|(known, _)| known == file) {
+                files.push((file.clone(), file_state(file)));
+            }
+        }
+        Fingerprint {
+            directory: file_state(directory),
+            files,
+        }
+    }
+}
+
+/// Catalogs loaded without error, and the fingerprint of their files.
+struct Cached {
+    fingerprint: Fingerprint,
+    catalogs: Catalogs,
+}
+
 /// Catalogs already loaded by this proc-macro process, by configuration.
-static CACHE: LazyLock<Mutex<HashMap<Config, Catalogs>>> =
+///
+/// rustc runs a new proc-macro process per crate, but rust-analyzer keeps one
+/// for the whole session: an entry is reloaded when its locale files change,
+/// and failed loads are not cached, so that fixing a file clears its error.
+static CACHE: LazyLock<Mutex<HashMap<Config, Cached>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn load_catalogs(config: &Config) -> Vec<Result<Catalog, String>> {
@@ -349,13 +393,29 @@ fn load_catalogs(config: &Config) -> Vec<Result<Catalog, String>> {
         .collect()
 }
 
-/// The catalogs of `config`, loaded on first use.
+/// The catalogs of `config`, loaded on first use and again when their locale
+/// files change.
 fn catalogs(config: &Config) -> Catalogs {
     let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
-    cache
-        .entry(config.clone())
-        .or_insert_with(|| Arc::new(load_catalogs(config)))
-        .clone()
+    if let Some(cached) = cache.get(config) {
+        if Fingerprint::new(&config.path, &cached.catalogs) == cached.fingerprint {
+            return cached.catalogs.clone();
+        }
+    }
+    let catalogs = Arc::new(load_catalogs(config));
+    if catalogs.iter().all(Result::is_ok) {
+        let fingerprint = Fingerprint::new(&config.path, &catalogs);
+        cache.insert(
+            config.clone(),
+            Cached {
+                fingerprint,
+                catalogs: catalogs.clone(),
+            },
+        );
+    } else {
+        cache.remove(config);
+    }
+    catalogs
 }
 
 /// Index of the default locale among the available locales.
@@ -2499,5 +2559,54 @@ mod tests {
         let first = catalogs(&config);
         assert_eq!(first.len(), 2);
         assert!(Arc::ptr_eq(&first, &catalogs(&config)));
+    }
+
+    #[cfg(feature = "backend-json")]
+    fn greeting(catalogs: &Catalogs, index: usize) -> String {
+        let catalog = catalogs[index].as_ref().unwrap();
+        get(catalog, "greeting").to_string()
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn catalogs_reload_changed_locale_files() {
+        let directory = crate_with_locales("");
+        let config = Config::from_i18n_args(
+            quote! { available_locales = ["en", "fr"] },
+            directory.path(),
+            &Environment::default(),
+        )
+        .unwrap();
+        assert_eq!(greeting(&catalogs(&config), 0), "Hello");
+        // A different length, so that the test does not depend on the
+        // resolution of modification times.
+        std::fs::write(
+            directory.path().join("locales/en.json"),
+            r#"{"greeting": "Hello again"}"#,
+        )
+        .unwrap();
+        let reloaded = catalogs(&config);
+        assert_eq!(greeting(&reloaded, 0), "Hello again");
+        assert_eq!(greeting(&reloaded, 1), "Bonjour");
+        assert!(Arc::ptr_eq(&reloaded, &catalogs(&config)));
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn catalogs_retry_failed_loads() {
+        let directory = crate_with_locales("");
+        let french = directory.path().join("locales/fr.json");
+        std::fs::write(&french, "{").unwrap();
+        let config = Config::from_i18n_args(
+            quote! { available_locales = ["en", "fr"] },
+            directory.path(),
+            &Environment::default(),
+        )
+        .unwrap();
+        let broken = catalogs(&config);
+        assert!(broken[0].is_ok());
+        assert!(broken[1].as_ref().err().unwrap().contains("fr.json"));
+        std::fs::write(&french, r#"{"greeting": "Salut"}"#).unwrap();
+        assert_eq!(greeting(&catalogs(&config), 1), "Salut");
     }
 }
