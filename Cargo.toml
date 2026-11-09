@@ -35,5 +35,8 @@ backend-yaml = ["embedded-i18n-macros/backend-yaml"]
 backend-toml = ["embedded-i18n-macros/backend-toml"]
 backend-fluent = ["embedded-i18n-macros/backend-fluent"]
 
+[package.metadata.i18n]
+fallback = "en"
+
 [package.metadata.docs.rs]
 all-features = true

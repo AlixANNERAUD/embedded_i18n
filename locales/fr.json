@@ -3,6 +3,7 @@
   "farewell": "Au revoir",
   "with_arg": "Valeur : {value}",
   "c_greeting": "Bonjour du C",
+  "percent": "%{name} {raw}",
   "with_named_args": "Bonjour {name}, vous avez {count} messages",
   "menu": {
     "Open": "Ouvrir",
