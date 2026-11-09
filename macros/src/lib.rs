@@ -37,13 +37,13 @@ mod locale;
 mod locale_id;
 #[cfg(feature = "backend-mo")]
 mod mo;
+#[allow(dead_code)] // wired in by the t! expansion
+mod placeholder;
 #[cfg_attr(
     not(any(feature = "backend-po", feature = "backend-mo")),
     allow(dead_code)
 )]
 mod plural;
-#[allow(dead_code)] // wired in by the t! expansion
-mod placeholder;
 #[cfg(feature = "backend-po")]
 mod po;
 #[cfg(feature = "backend-toml")]
