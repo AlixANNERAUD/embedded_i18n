@@ -5,16 +5,24 @@ That is what you want while translations are in progress, but it can ship a Fren
 
 ## Strict Mode
 
-Build with `EMBEDDED_I18N_STRICT=1` to forbid falling back:
+Set `strict = true` to forbid falling back, in the arguments of [`i18n!`] or in the `[package.metadata.i18n]` table of `Cargo.toml` (see [Configuration][guide-configuration]):
 
-```sh
-EMBEDDED_I18N_STRICT=1 EMBEDDED_I18N_LOCALE=fr cargo build --release
+```toml
+[package.metadata.i18n]
+default-locale = "fr"
+strict = true
 ```
 
-Every [`translate!`], [`translate_plural!`] and [`translate_select!`] (and their write and args variants) must then find its message in the primary locale, i.e. the selected locale and its less specific forms (`fr-CA` and `fr` for `EMBEDDED_I18N_LOCALE=fr-CA`), otherwise the build fails at the call site:
+Every [`t!`] call must then find its message in the primary locale, i.e. the default locale and its less specific forms (`fr-CA` and `fr` for `default_locale = "fr-CA"`), otherwise the build fails at the call site:
+
+```rust,compile_fail
+// `missing_in_french` only exists in `locales/en.json`.
+embedded_i18n::i18n!("locales", default_locale = "fr", strict = true);
+let _ = embedded_i18n::t!("missing_in_french");
+```
 
 ```text
-error: translation for "Settings" is missing from the primary locale "fr" (EMBEDDED_I18N_STRICT is set)
+error: translation for "missing_in_french" is missing from the primary locale "fr"
 ```
 
 Every untranslated call site is reported in one build, not only the first one.
@@ -22,7 +30,8 @@ Entries ignored by the parsers count as missing: empty translations, fuzzy PO en
 With [several embedded locales][guide-runtime-locales], every embedded locale must be complete.
 The [pseudo-locale][guide-pseudo-localization] is always complete.
 
-A CI job building each shipped locale in strict mode catches untranslated strings before release:
+A CI job building each shipped locale in strict mode catches untranslated strings before release.
+`EMBEDDED_I18N_LOCALE` overrides `default_locale` for the build, so one job can cover every language:
 
 ```yaml
 strategy:
@@ -32,8 +41,9 @@ steps:
   - run: cargo build --release
     env:
       EMBEDDED_I18N_LOCALE: ${{ matrix.locale }}
-      EMBEDDED_I18N_STRICT: "1"
 ```
+
+with `strict = true` in the metadata of the crate.
 
 ## Key Extraction and Unused Keys
 
@@ -41,8 +51,8 @@ There is no built-in extraction of the keys used in the source code (an `xgettex
 A procedural macro only sees its own call site, cannot know when the last call site of a crate has been expanded, and cannot emit warnings on stable Rust, so these reports would need a separate tool scanning the sources.
 Strict mode covers the most harmful case, untranslated strings, at compile time.
 
+[guide-configuration]: configuration.md
 [guide-runtime-locales]: runtime_locales.md
 [guide-pseudo-localization]: pseudo_localization.md
-[`translate!`]: translating.md
-[`translate_plural!`]: plurals.md
-[`translate_select!`]: select.md
+[`i18n!`]: configuration.md
+[`t!`]: translating.md

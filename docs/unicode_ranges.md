@@ -45,12 +45,12 @@ With the `alloc` feature, `merge_contiguous_ranges`, `format_range` and `format_
 The ranges are typically needed when converting fonts, before compiling the firmware.
 With the `std` feature in `[build-dependencies]`, a build script can generate the font for the build locale:
 
-```rust,ignore
-use embedded_i18n::{format_ranges, get_locale_build, get_locale_ranges, merge_contiguous_ranges};
+```rust,no_run
+use embedded_i18n::{format_ranges, get_locale_ranges, merge_contiguous_ranges};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=EMBEDDED_I18N_LOCALE");
-    let locale = get_locale_build();
+    let locale = std::env::var("EMBEDDED_I18N_LOCALE").unwrap_or_else(|_| "en".to_string());
     let ranges = get_locale_ranges(&locale).expect("unsupported locale");
     let ranges = merge_contiguous_ranges(ranges.to_vec());
     let ranges = format_ranges(&ranges);
@@ -59,6 +59,10 @@ fn main() {
 }
 ```
 
+The build script cannot see the arguments of [`i18n!`]: it reads the same `EMBEDDED_I18N_LOCALE` variable as the [override][guide-configuration], or its own setting.
+
+[guide-configuration]: configuration.md
+[`i18n!`]: configuration.md
 [`get_locale_ranges`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.get_locale_ranges.html
 [`merge_contiguous_ranges_in_place`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.merge_contiguous_ranges_in_place.html
 [`write_ranges`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.write_ranges.html

@@ -1,27 +1,34 @@
 # Date and Time
 
 [`DateTimeFormatter`] formats Unix timestamps with `strftime`-style patterns, without `libc`, without allocation and without a time zone database, into any [`core::fmt::Write`].
-Month and weekday names, AM/PM markers and the default date and time patterns follow the build locale:
-
-```rust
-use embedded_i18n::write_unix_timestamp;
-
-let mut output = String::new();
-write_unix_timestamp(&mut output, 1_791_884_800, "%A %d %B %Y, %X")?;
-assert_eq!(output, "Tuesday 13 October 2026, 09:46:40 AM");
-// EMBEDDED_I18N_LOCALE=fr: "mardi 13 octobre 2026, 09:46:40"
-# Ok::<(), core::fmt::Error>(())
-```
-
-## Formatter
-
-A formatter can use the names of another locale and a fixed UTC offset, and is `const`:
+It takes the locale of its month and weekday names, AM/PM markers and default date and time patterns.
+Pass the locale of the crate to follow the language of the firmware:
 
 ```rust
 use embedded_i18n::{date_time_locale, DateTimeFormatter};
 
-const PARIS: DateTimeFormatter = DateTimeFormatter::new()
-    .with_locale(date_time_locale("fr"))
+embedded_i18n::i18n!("locales");
+
+const FORMATTER: DateTimeFormatter =
+    DateTimeFormatter::new(date_time_locale(embedded_i18n::locale!()));
+
+let mut output = String::new();
+FORMATTER.write(&mut output, 1_791_884_800, "%A %d %B %Y, %X")?;
+assert_eq!(output, "Tuesday 13 October 2026, 09:46:40 AM");
+// default_locale = "fr": "mardi 13 octobre 2026, 09:46:40"
+# Ok::<(), core::fmt::Error>(())
+```
+
+[`date_time_locale`] is a `const fn` and [`locale!`] is a literal when a single locale is embedded, so the locale is resolved at compile time and only its strings end up in the firmware.
+
+## Formatter
+
+A formatter can also use a fixed UTC offset, and is `const`:
+
+```rust
+use embedded_i18n::{date_time_locale, DateTimeFormatter};
+
+const PARIS: DateTimeFormatter = DateTimeFormatter::new(date_time_locale("fr"))
     .with_utc_offset(2 * 3600);
 
 let mut output = String::new();
@@ -73,7 +80,7 @@ Some languages decline month names: Russian writes `13 октября` in a date
 ```rust
 use embedded_i18n::{date_time_locale, DateTimeFormatter};
 
-let russian = DateTimeFormatter::new().with_locale(date_time_locale("ru"));
+let russian = DateTimeFormatter::new(date_time_locale("ru"));
 let mut output = String::new();
 russian.write(&mut output, 1_791_884_800, "%d %B / %OB")?;
 assert_eq!(output, "13 октября / октябрь");
@@ -84,10 +91,9 @@ assert_eq!(output, "13 октября / октябрь");
 
 Names and patterns come from a compile-time table covering `ar`, `be`, `cs`, `da`, `de`, `el`, `en`, `es`, `fr`, `he`, `hi`, `hu`, `it`, `ja`, `ko`, `nb`, `nl`, `nn`, `no`, `pl`, `pt`, `ro`, `ru`, `sk`, `sv`, `th`, `tr`, `uk`, `vi` and `zh`, with regional date patterns for `en-GB`, `en-IE`, `en-AU`, `en-NZ`, `en-IN`, `en-CA`, `fr-CA` and `fr-CH`.
 
-The build locale is resolved once, at compile time, into the [`DATE_TIME_LOCALE`] constant: `EMBEDDED_I18N_LOCALE`, then each `EMBEDDED_I18N_FALLBACK`, then English.
-Only the strings of that locale end up in the firmware.
-[`date_time_locale`] returns the data of another locale (English if it is not covered) and [`find_date_time_locale`] returns `None` instead.
-Called with a constant, they are resolved at compile time; called with a runtime string, such as the [current locale][guide-runtime-locales], they link the whole table, about 30 locales of names.
+[`date_time_locale`] returns the data of a locale (English if it is not covered) and [`find_date_time_locale`] returns `None` instead.
+Called with a constant, such as the [`locale!`] of a crate embedding one locale, they are resolved at compile time and only the strings of that locale end up in the firmware.
+Called with a runtime string, such as the [current locale][guide-runtime-locales], they link the whole table, about 30 locales of names.
 
 Digits are always ASCII, the calendar is always Gregorian, and weeks are not numbered.
 
@@ -96,7 +102,7 @@ Digits are always ASCII, the calendar is always Gregorian, and weeks are not num
 [`DateTimeFormatter::write`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.DateTimeFormatter.html#method.write
 [`DateTimeFormatter::display`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.DateTimeFormatter.html#method.display
 [`DateTimeFormatter::format`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/struct.DateTimeFormatter.html#method.format
-[`DATE_TIME_LOCALE`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/constant.DATE_TIME_LOCALE.html
+[`locale!`]: runtime_locales.md
 [`date_time_locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.date_time_locale.html
 [`find_date_time_locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.find_date_time_locale.html
 [`core::fmt::Write`]: https://doc.rust-lang.org/core/fmt/trait.Write.html

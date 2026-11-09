@@ -25,10 +25,6 @@ pub mod select {}
 pub mod formatting {}
 
 #[doc = include_str!("../docs/rustdoc-links.md")]
-#[doc = include_str!("../docs/rebuild_tracking.md")]
-pub mod rebuild_tracking {}
-
-#[doc = include_str!("../docs/rustdoc-links.md")]
 #[doc = include_str!("../docs/configuration.md")]
 pub mod configuration {}
 
@@ -63,3 +59,11 @@ pub mod no_std {}
 #[doc = include_str!("../docs/rustdoc-links.md")]
 #[doc = include_str!("../docs/comparison.md")]
 pub mod comparison {}
+
+#[doc = include_str!("../docs/rustdoc-links.md")]
+#[doc = include_str!("../docs/migrating_from_rust_i18n.md")]
+pub mod migrating_from_rust_i18n {}
+
+#[doc = include_str!("../docs/rustdoc-links.md")]
+#[doc = include_str!("../docs/migrating_from_0_1.md")]
+pub mod migrating_from_0_1 {}

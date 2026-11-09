@@ -1,10 +1,11 @@
 # Locale Files
 
-Translations live in one file per locale, in a `locales/` directory next to the `Cargo.toml` of the crate calling the macros (see [Configuration][guide-configuration] to change it): `en.json`, `fr-CA.po`, `de.yaml`...
+Translations live in one file per locale, in a `locales/` directory next to the `Cargo.toml` of the crate calling [`i18n!`] (see [Configuration][guide-configuration] to change it): `en.json`, `fr-CA.po`, `de.yaml`...
 The files are read and parsed by the procedural macros at compile time, so every format adds code to the build only, never to the firmware.
 
 Keys are either source strings, gettext style (`"Hello, world!"`), or identifiers (`menu.settings.title`).
 Both styles can be mixed.
+Translations use `{name}` placeholders, or rust-i18n's `%{name}`, see [Formatting][guide-formatting].
 
 ## Formats and Cargo Features
 
@@ -23,7 +24,7 @@ To use another format than JSON, disable the default features:
 
 ```toml
 [dependencies]
-embedded-i18n = { version = "0.1", default-features = false, features = ["backend-po"] }
+embedded-i18n = { version = "0.2", default-features = false, features = ["backend-po"] }
 ```
 
 Several backends can be enabled together.
@@ -35,7 +36,7 @@ Files of the same locale are not merged.
 ```json
 {
   "Hello, world!": "Bonjour le monde !",
-  "Missing argument: {}": "Argument manquant : {}",
+  "Missing argument: {name}": "Argument manquant : {name}",
   "menu": {
     "settings": {
       "title": "Paramètres"
@@ -44,7 +45,7 @@ Files of the same locale are not merged.
 }
 ```
 
-Nested objects are flattened to dotted keys, so the last entry is `translate!("menu.settings.title")`.
+Nested objects are flattened to dotted keys, so the last entry is `t!("menu.settings.title")`.
 Values must be strings or objects.
 A key defined twice, e.g. `"menu.settings.title"` and its nested form, is a compile error.
 
@@ -112,7 +113,7 @@ The supported subset covers simple messages:
 - text, message references and term references (`{ -brand }` becomes `Acme`);
 - string and number literals;
 - attributes, as `<message>.<attribute>` keys (`login.placeholder`);
-- variables, which become named format placeholders: `{ $user-name }` becomes `{user_name}`, for [`translate_write!`] and [`translate_args!`];
+- variables, which become named format placeholders: `{ $user-name }` becomes `{user_name}`, for the named arguments of [`t!`];
 - a select expression making up a whole message, which becomes one key per variant (`emails.one`, `emails.other`), with the default variant also available as `emails`. This is how [plural forms][guide-plurals] and [select variants][guide-select] are written in Fluent.
 
 Select expressions mixed with text, functions (`NUMBER()`, `DATETIME()`) and parameterized terms are not supported and are reported as compile errors.
@@ -128,5 +129,6 @@ Select expressions mixed with text, functions (`NUMBER()`, `DATETIME()`) and par
 [guide-context]: context.md
 [guide-plurals]: plurals.md
 [guide-select]: select.md
-[`translate_write!`]: formatting.md
-[`translate_args!`]: formatting.md
+[guide-formatting]: formatting.md
+[`t!`]: translating.md
+[`i18n!`]: configuration.md

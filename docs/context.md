@@ -2,21 +2,27 @@
 
 The same source string can need different translations: `Open` as a menu action is `Ouvrir` in French, but `Open` as a state is `Ouvert`.
 A message context disambiguates them.
-Pass `context = "..."` before the key:
+Pass `context = "..."` to [`t!`]:
 
 ```rust
-use embedded_i18n::translate;
+use embedded_i18n::t;
 
-assert_eq!(translate!(context = "menu", "Open"), "Open (menu)");
-assert_eq!(translate!(context = "state", "Open"), "Open (state)");
+embedded_i18n::i18n!("locales");
+
+assert_eq!(t!("Open", context = "menu"), "Open (menu)");
+assert_eq!(t!("Open", context = "state"), "Open (state)");
 ```
 
-`context` is accepted by every macro, works with C string keys, and combines with [plural forms][guide-plurals]:
+The option can also come first, as in `t!(context = "menu", "Open")`.
+The result is still a `&'static str`.
+`context` works with C string keys, and combines with [plural forms][guide-plurals]:
 
 ```rust
-use embedded_i18n::translate_plural;
+use embedded_i18n::t;
 
-assert_eq!(translate_plural!(context = "menu", "files", 2), "Open files");
+embedded_i18n::i18n!("locales");
+
+assert_eq!(t!("files", context = "menu", count = 2).to_string(), "Open files");
 ```
 
 ## In Locale Files
@@ -42,6 +48,7 @@ JSON, YAML, TOML and Fluent files use a namespace named after the context, i.e. 
 }
 ```
 
-A message with a context never falls back to the same key without context: if `menu.Open` is missing from every locale of the chain, `translate!(context = "menu", "Open")` is a compile error, even if `Open` exists.
+A message with a context never falls back to the same key without context: if `menu.Open` is missing from every locale of the chain, `t!("Open", context = "menu")` is a compile error, even if `Open` exists.
 
 [guide-plurals]: plurals.md
+[`t!`]: translating.md

@@ -1,34 +1,42 @@
 # Plural Forms
 
 `1 file`, `2 files`: English has two plural forms, but Polish and Russian have three or four, Arabic six, and Japanese one.
-[`translate_plural!`] picks the form matching a runtime count with the plural rules of the locale the message comes from:
+Pass `count = n` to [`t!`] to pick the form matching a runtime count with the plural rules of the locale the message comes from:
 
 ```rust
-use embedded_i18n::translate_plural;
+use embedded_i18n::t;
 
-assert_eq!(translate_plural!("files", 1), "{count} file");
-assert_eq!(translate_plural!("files", 5u32), "{count} files");
+embedded_i18n::i18n!("locales");
+
+assert_eq!(t!("files", count = 1).to_string(), "1 file");
+assert_eq!(t!("files", count = 5u32).to_string(), "5 files");
+assert_eq!(t!("files_with_zero", count = 0).to_string(), "No files");
 ```
 
-Only the selection runs at runtime: the rule is compiled into an `if` / `match` on the count, returning a `&'static str`, or a `&'static CStr` with a C string key.
-The count can be any integer type.
-Counts are integers only: negative counts use their absolute value, and fractional counts (`1.5 files`) are not supported.
-
-[`translate_plural_write!`] writes the selected form into any [`core::fmt::Write`] and binds the count to `count`, so forms can use the `{count}` placeholder without allocating:
+Only the selection runs at runtime: the rule is compiled into an `if` / `match` on the count.
+The result implements [`core::fmt::Display`] and formats on demand, so forms can use the `{count}` placeholder without allocating.
+Write it into any [`core::fmt::Write`] (a display driver, a fixed-size buffer, a `String`):
 
 ```rust
 use core::fmt::Write;
-use embedded_i18n::translate_plural_write;
+use embedded_i18n::t;
+
+embedded_i18n::i18n!("locales");
 
 let mut output = String::new();
-translate_plural_write!(&mut output, "files", 3)?;
+write!(output, "{}", t!("files", count = 3))?;
 assert_eq!(output, "3 files");
 # Ok::<(), core::fmt::Error>(())
 ```
 
-Extra format arguments can follow the count (`translate_plural_write!(display, "files", count, folder = name)`), and every form must then use them, like with `write!`.
-Variables in scope are captured too.
-Both macros accept a [`context`][guide-context].
+The count can be any integer type.
+Counts are integers only: negative counts use their absolute value, and fractional counts (`1.5 files`) are not supported.
+
+`count` is also an ordinary named argument: if the message has no plural forms, `t!("key", count = n)` only fills `{count}`.
+Other named arguments can follow the count (`t!("files", count = n, folder = name)`).
+A form that does not use an argument, such as a singular form without `{count}`, is fine, but a placeholder without an argument is a compile error.
+See [Formatting][guide-formatting].
+Messages accept a [`context`][guide-context], and a C string key cannot be used with `count`.
 
 ## JSON, YAML, TOML and Fluent
 
@@ -102,10 +110,10 @@ msgstr[1] "{count} файла"
 msgstr[2] "{count} файлов"
 ```
 
-The message is looked up by its `msgid` (`translate_plural!("file", n)`).
+The message is looked up by its `msgid` (`t!("file", count = n)`).
 Without a header, the gettext default `plural=(n != 1)` applies, and an index past the last form uses the first one.
 As with `msgfmt`, a plural entry with an empty form is untranslated and resolves through the fallback locales.
-[`translate!`] on a plural message returns its first form.
+`t!` on a plural message without `count` returns its first form.
 
 ## Compile Errors
 
@@ -113,10 +121,10 @@ As with `msgfmt`, a plural entry with an empty form is untranslated and resolves
 - a missing required category;
 - a message coming from a locale without built-in rules, in a JSON, YAML, TOML or Fluent file;
 - an invalid `Plural-Forms` expression;
-- format arguments not used by every form, in [`translate_plural_write!`].
+- a placeholder of a form without an argument, such as `{folder}` without `folder = ...`.
 
 [guide-context]: context.md
-[`translate!`]: translating.md
-[`translate_plural!`]: plurals.md
-[`translate_plural_write!`]: plurals.md
+[guide-formatting]: formatting.md
+[`t!`]: translating.md
+[`core::fmt::Display`]: https://doc.rust-lang.org/core/fmt/trait.Display.html
 [`core::fmt::Write`]: https://doc.rust-lang.org/core/fmt/trait.Write.html

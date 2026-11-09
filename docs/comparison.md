@@ -12,7 +12,7 @@ Runtime libraries fit applications that load language packs at runtime or need t
 | Placeholders checked at compile time | ✅ | ❌ | ❌ | ❌ |
 | Plural forms | CLDR rules, gettext `Plural-Forms` | Not built in | CLDR rules | gettext `Plural-Forms` |
 | Message context / select variants | ✅ / ✅ | ❌ / ❌ | Message ids / ✅ | ✅ / ❌ |
-| Runtime locale switching | Optional, locales chosen at build time | ✅ | ✅ | ✅ |
+| Runtime locale switching | Optional (`available_locales`), locales chosen at build time | ✅ | ✅ | ✅ |
 | File formats | JSON, YAML, TOML, PO, MO, Fluent (subset) | YAML, JSON, TOML | Fluent | MO |
 | Localized dates | Built in, without `libc` | ❌ | ❌ | ❌ |
 
@@ -20,18 +20,17 @@ The other crates evolve: check their documentation for the current state.
 
 ## Coming From rust-i18n
 
-- `t!("key")` becomes [`translate!`]`("key")`, and `t!("key", name = value)` becomes [`translate_write!`] or [`translate_args!`] with the same named arguments, checked at compile time.
-- The YAML, JSON and TOML files can be reused with the matching backend features, one file per locale (`en.yml`, `fr.yml`). Files containing several locales at once are not supported.
-- `rust_i18n::i18n!("locales")` has no equivalent: the directory is set with `EMBEDDED_I18N_PATH`, and [`track_locales!`] makes Cargo rebuild when the files change.
-- Placeholders use Rust format syntax, `{name}`, instead of `%{name}`.
-- `rust_i18n::set_locale("fr")` becomes [`set_locale`]`("fr")`, with the locales listed at build time in `EMBEDDED_I18N_LOCALES`.
+The API follows rust-i18n: `i18n!` and `t!` have the same names and most of the same syntax, and the YAML, JSON and TOML files can be reused with the matching backend features, one file per locale (`en.yml`, `fr.yml`).
+The differences (returning `&'static str` or `Display` instead of `Cow<str>`, compile errors instead of runtime fallbacks, one embedded locale by default) are listed in [Migrating from rust-i18n][guide-migrating-rust-i18n].
+
+Coming from an earlier version of this crate? See [Migrating from 0.1][guide-migrating-0-1].
 
 ## Coming From gettext
 
 - `.po` and `.mo` files are read directly by the `backend-po` and `backend-mo` features, with `msgctxt`, plural forms, `Plural-Forms` headers and fuzzy entries handled like `msgfmt`.
-- `gettext("text")` becomes [`translate!`]`("text")`, `pgettext("ctx", "text")` becomes `translate!(context = "ctx", "text")`, and `ngettext("file", "files", n)` becomes [`translate_plural!`]`("file", n)`.
-- Translations are format strings: placeholders use Rust format syntax (`{}`, `{name}`) rather than `printf` (`%s`, `%d`).
-- Source strings must be translated in at least one locale file (an English catalog, or `EMBEDDED_I18N_FALLBACK` pointing to the source language), since keys are not used as their own translation.
+- `gettext("text")` becomes [`t!`]`("text")`, `pgettext("ctx", "text")` becomes `t!("text", context = "ctx")`, and `ngettext("file", "files", n)` becomes `t!("file", count = n)`.
+- Placeholders are named and use Rust format syntax (`{name}`) rather than `printf` (`%s`, `%d`).
+- Source strings must be translated in at least one locale file (an English catalog, or the `fallback` option pointing to the source language), since keys are not used as their own translation.
 
 ## Coming From Fluent
 
@@ -40,9 +39,6 @@ The other crates evolve: check their documentation for the current state.
 - `{ $user-name }` becomes the Rust placeholder `{user_name}`.
 
 [guide-locale-files]: locale_files.md
-[`translate!`]: translating.md
-[`translate_write!`]: formatting.md
-[`translate_args!`]: formatting.md
-[`translate_plural!`]: plurals.md
-[`track_locales!`]: rebuild_tracking.md
-[`set_locale`]: https://docs.rs/embedded-i18n/latest/embedded_i18n/fn.set_locale.html
+[guide-migrating-rust-i18n]: migrating_from_rust_i18n.md
+[guide-migrating-0-1]: migrating_from_0_1.md
+[`t!`]: translating.md
