@@ -85,13 +85,17 @@ Store the selected tag (or its index in this list) in flash, and pass it to [`se
 On a hosted target, enable the `std` feature and pass [`system_locale`] to [`set_locale`] at startup:
 
 ```rust,standalone_crate
+# #[cfg(feature = "std")]
 use embedded_i18n::{set_locale, system_locale};
 
 embedded_i18n::i18n!("locales", available_locales = ["en", "fr"]);
 
+# #[cfg(feature = "std")]
 fn main() {
     set_locale(&system_locale().unwrap_or_default());
 }
+# #[cfg(not(feature = "std"))]
+# fn main() {}
 ```
 
 It reads `LC_ALL`, `LC_MESSAGES` then `LANG`, and allocates a `String` on each call, so call it once.

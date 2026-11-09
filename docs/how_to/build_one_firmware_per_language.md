@@ -62,7 +62,8 @@ Add `strict = true` to the metadata of the crate to also fail on untranslated st
 A build script runs before the crate is compiled and cannot see the arguments of [`i18n!`].
 Read the same variable to prepare language-specific assets, such as the font subset of the locale (see [How to Subset Fonts][how-to-subset-fonts]):
 
-```rust,no_run
+```rust,ignore
+// build.rs
 fn main() {
     println!("cargo:rerun-if-env-changed=EMBEDDED_I18N_LOCALE");
     let locale = std::env::var("EMBEDDED_I18N_LOCALE").unwrap_or_else(|_| "en".to_string());

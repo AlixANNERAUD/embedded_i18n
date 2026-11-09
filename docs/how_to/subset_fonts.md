@@ -49,7 +49,8 @@ Add `embedded-i18n` with the `std` feature to `[build-dependencies]`, and read t
 embedded-i18n = { version = "0.2", features = ["std"] }
 ```
 
-```rust,no_run
+```rust,ignore
+// build.rs
 use embedded_i18n::{format_ranges, get_locale_ranges, merge_contiguous_ranges};
 
 fn main() {
