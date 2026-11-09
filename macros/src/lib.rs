@@ -1001,8 +1001,15 @@ pub fn i18n(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn __expand(input: TokenStream) -> TokenStream {
     expand_request(input.into())
-        .unwrap_or_else(syn::Error::into_compile_error)
+        .unwrap_or_else(expression_error)
         .into()
+}
+
+/// `error` as an expression: several `compile_error!` invocations in a row
+/// are not one, and rustc would report parse errors after them.
+fn expression_error(error: syn::Error) -> TokenStream2 {
+    let error = error.into_compile_error();
+    quote! { { #error } }
 }
 
 #[cfg(test)]
@@ -1425,6 +1432,22 @@ mod tests {
         let tokens =
             expand_request(quote! { #config_tokens @t "greeting", locale = "en" }).unwrap();
         assert_eq!(tokens.to_string(), quote! { "Hello" }.to_string());
+    }
+
+    #[test]
+    fn expand_errors_are_one_expression() {
+        let mut error = syn::Error::new(Span::call_site(), "first");
+        error.combine(syn::Error::new(Span::call_site(), "second"));
+        assert_eq!(
+            expression_error(error).to_string(),
+            quote! {
+                {
+                    ::core::compile_error! { "first" }
+                    ::core::compile_error! { "second" }
+                }
+            }
+            .to_string()
+        );
     }
 
     #[test]
