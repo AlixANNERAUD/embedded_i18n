@@ -22,7 +22,7 @@ The options and the metadata keys are those of rust-i18n where they exist:
 | `i18n!("locales", fallback = "en")`, `fallback = ["en", "es"]` | the same |
 | `[package.metadata.i18n]` `load-path` | the same, and the default is `"locales"` too |
 | `default-locale`, `available-locales` | the same, see [below](#only-default_locale-is-embedded-by-default) |
-| `minify-key`, `minify-key-len`, `minify-key-prefix`, `minify-key-thresh` | not provided, see [Features Not Provided](#features-not-provided) |
+| `minify-key`, `minify-key-len`, `minify-key-prefix`, `minify-key-thresh` | remove them: they fail the build with "unknown key", see [Features Not Provided](#features-not-provided) |
 | | `strict` and `bidi-isolation`, see [How to Ship Complete Translations][how-to-ship-complete] and [How to Support Right-to-Left Languages][how-to-right-to-left] |
 
 Each integration test, example and doctest that translates calls [`i18n!`] once, as it is a separate crate.

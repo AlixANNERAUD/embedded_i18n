@@ -24,7 +24,7 @@ This guide upgrades a crate, item by item.
 | `translate_args!("key", name = value)` | `t!("key", name = value)`, a `Display` value |
 | `translate_write!(writer, "key", name = value)` | `write!(writer, "{}", t!("key", name = value))` |
 | `translate_write!(writer, "key", value)` | `write!(writer, "{}", t!("key", value = value))`, with a named placeholder |
-| `translate_plural!("key", n)` | `t!("key", count = n)` |
+| `translate_plural!("key", n)` | `t!("key", count = n)`, a `Display` value with `{count}` filled in (`"3 files"`), where 0.1 returned the raw form as a `&'static str` (`"{count} files"`) |
 | `translate_plural_write!(writer, "key", n)` | `write!(writer, "{}", t!("key", count = n))` |
 | `translate_select!("key", value)` | `t!("key", select = value)` |
 | `translate_select_write!(writer, "key", value)` | `write!(writer, "{}", t!("key", select = value))` |
@@ -125,7 +125,26 @@ Use [`locale!`]`()` in the firmware, and read `EMBEDDED_I18N_LOCALE` yourself in
 | --- | --- |
 | `DATE_TIME_LOCALE` | removed |
 | `DateTimeFormatter::new()` | `DateTimeFormatter::new(date_time_locale(locale!()))`, still resolved at compile time with a single locale |
+| `DateTimeFormatter::default()` | removed with `impl Default for DateTimeFormatter`: use `DateTimeFormatter::new(locale)` |
+| `write_unix_timestamp(..)` | `DateTimeFormatter::new(date_time_locale(locale!())).write(..)` |
+| `format_unix_timestamp(..)` | `DateTimeFormatter::new(date_time_locale(locale!())).format(..)` |
 | `is_locale_right_to_left()` | `is_right_to_left(locale!())` |
+
+`write_unix_timestamp` and `format_unix_timestamp` remain, but no longer follow the build locale: 0.1 formatted in the build locale and UTC, 0.2 formats in English and UTC.
+Replace them with a [`DateTimeFormatter`] built from [`locale!`]`()` to keep translated month and weekday names:
+
+```rust
+use embedded_i18n::{date_time_locale, DateTimeFormatter};
+
+embedded_i18n::i18n!("locales");
+
+let mut output = String::new();
+// 0.1: write_unix_timestamp(&mut output, 1_791_884_800, "%d %B")
+DateTimeFormatter::new(date_time_locale(embedded_i18n::locale!()))
+    .write(&mut output, 1_791_884_800, "%d %B")?;
+assert_eq!(output, "13 October");
+# Ok::<(), core::fmt::Error>(())
+```
 
 See [How to Format Dates and Times][how-to-format-dates] and [How to Support Right-to-Left Languages][how-to-right-to-left].
 
@@ -149,3 +168,4 @@ The `std` feature enables [`system_locale`] instead of the build script getters.
 [`available_locales!`]: ../reference/runtime_api.md
 [`Locale`]: ../reference/runtime_api.md
 [`system_locale`]: ../reference/runtime_api.md
+[`DateTimeFormatter`]: ../reference/date_time.md
