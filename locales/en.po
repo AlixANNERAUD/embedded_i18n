@@ -12,7 +12,7 @@ msgid "farewell"
 msgstr "Goodbye"
 
 msgid "with_arg"
-msgstr "Value: {}"
+msgstr "Value: {value}"
 
 msgid "c_greeting"
 msgstr "Hello from C"

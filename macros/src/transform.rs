@@ -22,7 +22,44 @@ enum Segment<'a> {
     Placeholder(&'a str),
 }
 
+/// Splits a translation into text and placeholders, with the syntax
+/// [`crate::placeholder::template`] reads: text containing `%{` uses the
+/// rust-i18n syntax, where `%{name}` is the placeholder and every other brace
+/// is text; any other text uses the Rust format syntax.
 fn segments(value: &str) -> Vec<Segment<'_>> {
+    if value.contains("%{") {
+        percent_segments(value)
+    } else {
+        rust_segments(value)
+    }
+}
+
+fn percent_segments(value: &str) -> Vec<Segment<'_>> {
+    let mut segments = Vec::new();
+    let mut start = 0;
+    let mut rest = 0;
+    while let Some(offset) = value[rest..].find("%{") {
+        let index = rest + offset;
+        match value[index..].find('}') {
+            Some(length) => {
+                if start < index {
+                    segments.push(Segment::Text(&value[start..index]));
+                }
+                let end = index + length + 1;
+                segments.push(Segment::Placeholder(&value[index..end]));
+                start = end;
+                rest = end;
+            }
+            None => break,
+        }
+    }
+    if start < value.len() {
+        segments.push(Segment::Text(&value[start..]));
+    }
+    segments
+}
+
+fn rust_segments(value: &str) -> Vec<Segment<'_>> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut index = 0;
@@ -143,10 +180,28 @@ mod tests {
     }
 
     #[test]
+    fn isolates_whole_percent_placeholders() {
+        assert_eq!(
+            isolate_placeholders("مرحبا %{name}"),
+            "مرحبا \u{2068}%{name}\u{2069}"
+        );
+        assert_eq!(
+            isolate_placeholders("%{name} {raw} {{x}} 50%"),
+            "\u{2068}%{name}\u{2069} {raw} {{x}} 50%"
+        );
+        assert_eq!(isolate_placeholders("%{a}%{b"), "\u{2068}%{a}\u{2069}%{b");
+        let template =
+            crate::placeholder::template(&isolate_placeholders("مرحبا %{name} {raw}")).unwrap();
+        assert_eq!(template.format, "مرحبا \u{2068}{name}\u{2069} {{raw}}");
+        assert_eq!(template.placeholders, ["name"]);
+    }
+
+    #[test]
     fn pseudo_accents_expands_and_brackets() {
         assert_eq!(pseudo("Open"), "[Ópéñ ~~]");
         assert_eq!(pseudo("Hello {name}, {{x}}!"), "[Hélló {name}, {{x}}! ~~]");
         assert_eq!(pseudo("{count}"), "[{count}]");
+        assert_eq!(pseudo("Hi %{name} {raw}"), "[Hí %{name} {ráw} ~~]");
         assert_eq!(pseudo(""), "");
     }
 }

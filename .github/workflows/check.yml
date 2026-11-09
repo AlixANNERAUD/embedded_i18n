@@ -39,10 +39,11 @@ jobs:
       - name: Test without alloc
         run: cargo test --workspace --no-default-features --features backend-json,backend-po
 
-      - name: Test multiple locales
-        run: |
-          EMBEDDED_I18N_LOCALES=en,fr cargo test --test multi_locale
-          EMBEDDED_I18N_LOCALES=en,fr cargo test --test multi_locale --no-default-features --features backend-po
+      - name: Test the PO backend alone
+        run: cargo test --test backend_po --no-default-features --features backend-po
+
+      - name: Test the environment override
+        run: EMBEDDED_I18N_LOCALE=fr cargo test --test single_locale environment_override
 
       - name: Test and Coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
@@ -84,6 +85,10 @@ jobs:
     strategy:
       matrix:
         features: [backend-json, backend-po, "backend-json,alloc"]
+        target: [thumbv7em-none-eabihf]
+        include:
+          - features: backend-json
+            target: thumbv6m-none-eabi
     steps:
       - uses: actions/checkout@v4
 
@@ -94,7 +99,7 @@ jobs:
           cache-key-suffix: no-std-${{ strategy.job-index }}
 
       - name: Build
-        run: cargo build --target thumbv7em-none-eabihf --no-default-features --features ${{ matrix.features }}
+        run: cargo build --target ${{ matrix.target }} --no-default-features --features ${{ matrix.features }}
 
   msrv:
     runs-on: ubuntu-latest

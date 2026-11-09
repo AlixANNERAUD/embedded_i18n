@@ -1258,33 +1258,6 @@ pub const fn date_time_locale(locale: &str) -> DateTimeLocale {
     }
 }
 
-const fn build_date_time_locale() -> DateTimeLocale {
-    if let Some(found) = find_date_time_locale(crate::get_locale()) {
-        return found;
-    }
-    let fallbacks = crate::get_fallback_locale().as_bytes();
-    let mut start = 0;
-    let mut index = 0;
-    while index <= fallbacks.len() {
-        if index == fallbacks.len() || fallbacks[index] == b',' {
-            let (entry, _) = fallbacks.split_at(index);
-            let (_, entry) = entry.split_at(start);
-            if let Ok(entry) = core::str::from_utf8(entry) {
-                if let Some(found) = find_date_time_locale(entry.trim_ascii()) {
-                    return found;
-                }
-            }
-            start = index + 1;
-        }
-        index += 1;
-    }
-    ENGLISH
-}
-
-/// Names and patterns of the build locale, resolved at compile time from
-/// `EMBEDDED_I18N_LOCALE`, then each fallback locale, then English.
-pub const DATE_TIME_LOCALE: DateTimeLocale = build_date_time_locale();
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1320,10 +1293,5 @@ mod tests {
         assert_eq!(russian.months[9], "октября");
         assert_eq!(russian.months_standalone[9], "октябрь");
         assert_eq!(date_time_locale("fr").months_standalone[1], "février");
-    }
-
-    #[test]
-    fn build_locale_defaults_to_english() {
-        assert_eq!(DATE_TIME_LOCALE, ENGLISH);
     }
 }

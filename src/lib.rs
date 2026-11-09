@@ -1,4 +1,5 @@
-//! Compile-time internationalization for embedded and `no_std` Rust.
+//! Compile-time internationalization for embedded and `no_std` Rust, with a
+//! [rust-i18n](https://crates.io/crates/rust-i18n) style API.
 //!
 //! Translations are read from locale files at build time by procedural macros
 //! and embedded in the binary as `&'static str` literals: no runtime parsing, no
@@ -11,28 +12,27 @@
 //!
 //! ```json
 //! {
-//!   "greeting": "Bonjour",
-//!   "files": { "one": "{count} fichier", "other": "{count} fichiers" }
+//!   "greeting": "Hello",
+//!   "files": { "one": "{count} file", "other": "{count} files" }
 //! }
 //! ```
 //!
-//! Pick the locale at build time with `EMBEDDED_I18N_LOCALE=fr cargo build`, and
-//! translate with the macros:
+//! Call [`i18n!`] once at the crate root, before any `mod` declaration, then
+//! translate with [`t!`]:
 //!
 //! ```
+//! embedded_i18n::i18n!("locales");
 //! use core::fmt::Write;
-//! use embedded_i18n::{translate, translate_plural, translate_write};
+//! use embedded_i18n::t;
 //!
-//! embedded_i18n::track_locales!();
-//!
-//! const GREETING: &str = translate!("greeting");
+//! const GREETING: &str = t!("greeting");
 //! assert_eq!(GREETING, "Hello");
 //!
-//! assert_eq!(translate_plural!("files", 2), "{count} files");
-//!
 //! let mut output = String::new();
-//! translate_write!(&mut output, "with_arg", 42)?;
+//! write!(output, "{}", t!("with_arg", value = 42))?;
 //! assert_eq!(output, "Value: 42");
+//!
+//! assert_eq!(t!("files", count = 2).to_string(), "2 files");
 //! # Ok::<(), core::fmt::Error>(())
 //! ```
 //!
@@ -40,33 +40,54 @@
 //!
 //! | Macro | Result |
 //! | --- | --- |
-//! | [`translate!`] | `&'static str` or `&'static CStr` literal |
-//! | [`translate_args!`] | [`core::fmt::Arguments`] with the translation as format string |
-//! | [`translate_write!`] | Writes the formatted translation into a [`core::fmt::Write`] |
-//! | [`translate_plural!`] / [`translate_plural_write!`] | Plural form selected from a count |
-//! | [`translate_select!`] / [`translate_select_write!`] | Variant selected from an `AsRef<str>` value |
-//! | [`track_locales!`] | Rebuilds the crate when a locale file changes |
-//!
-//! Every macro accepts a message context before the key: `translate!(context =
-//! "menu", "Open")`.
+//! | [`i18n!`] | Configures the translations of the crate, once at its root |
+//! | [`t!`] | `&'static str` (or `&'static CStr`) without arguments, a [`core::fmt::Display`] value with arguments or `count` |
+//! | [`locale!`] | Name of the locale the crate translates into |
+//! | [`available_locales!`] | Locales embedded in the crate |
 //!
 //! # Configuration
 //!
-//! The macros are configured with environment variables read at compile time,
-//! which can be set in `.cargo/config.toml`:
+//! [`i18n!`] takes the locale directory and options, read from
+//! `[package.metadata.i18n]` in `Cargo.toml` when not given:
 //!
-//! | Variable | Default | Description |
-//! | --- | --- | --- |
-//! | `EMBEDDED_I18N_LOCALE` | `en` | Locale to embed |
-//! | `EMBEDDED_I18N_FALLBACK` | `en` | Comma separated fallback locales |
-//! | `EMBEDDED_I18N_PATH` | `locales` | Locale files directory, relative to the calling crate |
-//! | `EMBEDDED_I18N_LOCALES` | unset | Locales to embed for [runtime selection](set_locale) |
-//! | `EMBEDDED_I18N_STRICT` | unset | Forbids falling back for messages missing from the primary locale |
-//! | `EMBEDDED_I18N_BIDI_ISOLATION` | unset | Isolates placeholders of right-to-left locales |
+//! | `i18n!` argument | `[package.metadata.i18n]` key | Default | Meaning |
+//! | --- | --- | --- | --- |
+//! | first positional string | `load-path` | `"locales"` | Locale directory, relative to `Cargo.toml` |
+//! | `fallback = "en"` or `["en", "es"]` | `fallback` | `["en"]` | Fallback chain after the locale and its parents |
+//! | `default_locale = "fr"` | `default-locale` | `"en"` | Locale active at startup |
+//! | `available_locales = [..]` | `available-locales` | `[default_locale]` | Embedded locales; more than one enables runtime selection |
+//! | `strict = true` | `strict` | `false` | Forbids falling back for messages missing from the primary locale |
+//! | `bidi_isolation = true` | `bidi-isolation` | `false` | Isolates placeholders of right-to-left locales |
+//!
+//! The `EMBEDDED_I18N_LOCALE` and `EMBEDDED_I18N_LOCALES` (comma separated)
+//! environment variables override `default_locale` and `available_locales` in
+//! every crate of the build, to build one firmware per language. Cargo rebuilds the crate when a locale
+//! file, `Cargo.toml` or one of these variables changes.
 //!
 //! Locales are normalized like BCP 47 tags and resolved from the most specific
 //! to the most generic (`fr-CA`, `fr`, then the fallbacks). The special locale
 //! `pseudo` generates a pseudo-localization of the fallback locales.
+//!
+//! # Runtime locales
+//!
+//! With several `available_locales`, [`set_locale`] selects the locale at
+//! runtime, for every crate of the program: each one translates into its
+//! closest embedded locale, or its `default_locale`. `t!("key", locale =
+//! "fr")` translates into a given locale without touching the global one.
+//!
+//! ```rust,standalone_crate
+//! embedded_i18n::i18n!("locales", available_locales = ["en", "fr"]);
+//! use embedded_i18n::{locale, set_locale, t};
+//!
+//! fn main() {
+//!     assert_eq!(t!("greeting", locale = "fr-CA"), "Bonjour");
+//!     set_locale("fr");
+//!     assert_eq!(t!("greeting"), "Bonjour");
+//!     assert_eq!(locale!(), "fr");
+//!     set_locale("de");
+//!     assert_eq!(t!("greeting"), "Hello");
+//! }
+//! ```
 //!
 //! # Locale file formats
 //!
@@ -86,30 +107,47 @@
 //!
 //! - [`DateTimeFormatter`] and [`write_unix_timestamp`]: localized `strftime`-style
 //!   formatting without allocation.
-//! - [`is_right_to_left`] and [`is_locale_right_to_left`]: text direction.
+//! - [`is_right_to_left`]: text direction.
 //! - [`get_locale_ranges`] and [`write_ranges`]: Unicode ranges to subset fonts.
-//! - [`set_locale`], [`locale`] and [`LOCALES`]: runtime locale selection when
-//!   several locales are embedded.
+//! - [`Locale`] and [`set_locale`]: runtime locale selection when several
+//!   locales are embedded.
 //!
 //! # Features
 //!
 //! - `alloc`: `String` and `Vec` returning variants of the helpers.
-//! - `std`: enables `alloc` and the build environment getters.
+//! - `std`: enables `alloc` and `system_locale()`, the locale of the operating
+//!   system.
 //!
 //! # Guide
 //!
-//! The [`guide`] has one page per topic: [locale files](guide::locale_files),
-//! [translating](guide::translating), [message context](guide::context),
-//! [plural forms](guide::plurals), [select variants](guide::select),
-//! [formatting](guide::formatting), [rebuild tracking](guide::rebuild_tracking),
-//! [configuration](guide::configuration),
-//! [runtime locale selection](guide::runtime_locales),
-//! [translation coverage](guide::coverage),
-//! [right-to-left languages](guide::right_to_left),
-//! [pseudo-localization](guide::pseudo_localization),
-//! [date and time](guide::date_time), [Unicode ranges](guide::unicode_ranges),
-//! [`no_std` support](guide::no_std) and a
-//! [comparison with other crates](guide::comparison).
+//! The [`guide`] follows the [Diátaxis](https://diataxis.fr) structure:
+//!
+//! - **Tutorial**: [getting started](guide::tutorials::getting_started), from
+//!   an empty project to a program translated into two languages.
+//! - **How-to guides**:
+//!   [switch language at runtime](guide::how_to::switch_language_at_runtime),
+//!   [localize per request](guide::how_to::localize_per_request),
+//!   [build one firmware per language](guide::how_to::build_one_firmware_per_language),
+//!   [use gettext PO files and other formats](guide::how_to::use_gettext_po_files),
+//!   [ship complete translations](guide::how_to::ship_complete_translations),
+//!   [pseudo-localize](guide::how_to::pseudo_localize),
+//!   [support right-to-left languages](guide::how_to::support_right_to_left_languages),
+//!   [format dates and times](guide::how_to::format_dates_and_times),
+//!   [subset fonts](guide::how_to::subset_fonts),
+//!   [migrate from rust-i18n](guide::how_to::migrate_from_rust_i18n) and
+//!   [migrate from 0.1](guide::how_to::migrate_from_0_1).
+//! - **Reference**: [the `t!` macro](guide::reference::t_macro),
+//!   [configuration](guide::reference::configuration),
+//!   [locale files](guide::reference::locale_files),
+//!   [plural rules](guide::reference::plural_rules),
+//!   [runtime API](guide::reference::runtime_api),
+//!   [date and time](guide::reference::date_time),
+//!   [Unicode ranges](guide::reference::unicode_ranges) and
+//!   [features and `no_std`](guide::reference::features_and_no_std).
+//! - **Explanation**: [how it works](guide::explanation::how_it_works),
+//!   [the runtime locale model](guide::explanation::runtime_locale_model),
+//!   [design choices](guide::explanation::design_choices) and a
+//!   [comparison with other crates](guide::explanation::comparison).
 #![no_std]
 #![deny(missing_docs)]
 
@@ -124,210 +162,208 @@ extern crate std;
 mod date_time;
 mod direction;
 pub mod guide;
+mod locale;
 mod range;
-mod selection;
 mod time;
 
 pub use date_time::*;
 pub use direction::*;
+pub use locale::*;
 pub use range::*;
-pub use selection::*;
 pub use time::*;
 
-/// Makes the calling crate depend on every locale file read by the macros.
+/// Configures the translations of the calling crate.
 ///
-/// Cargo does not know that the macros read locale files, so editing them would
-/// not rebuild the crate. Invoke this macro once, at module level, to rebuild
-/// whenever one of the loaded files changes. It expands to `include_bytes!` of
-/// each file in an unused constant and adds nothing to the binary.
+/// Invoke it once, at the crate root (`lib.rs` or `main.rs`), before the `mod`
+/// declarations that use [`t!`], as with rust-i18n. Each crate, integration
+/// test, example and doctest that translates calls it once; a second call in
+/// the same crate is a compile error. The arguments and the
+/// `[package.metadata.i18n]` keys are listed in the
+/// [crate documentation](crate#configuration).
 ///
 /// ```
-/// embedded_i18n::track_locales!();
+/// // Everything from `[package.metadata.i18n]`, or the defaults:
+/// embedded_i18n::i18n!();
 /// ```
-pub use embedded_i18n_macros::track_locales;
+///
+/// ```
+/// embedded_i18n::i18n!("locales", fallback = ["en"], strict = false);
+/// ```
+///
+/// With more than one available locale, `i18n!` also generates the crate's
+/// function resolving the [current locale](set_locale) to one of its locales:
+/// the same tag, else the same language, else `default_locale`.
+///
+/// Errors are reported on the call: unknown option, wrong value type, empty
+/// locale name, `default_locale` not in `available_locales`, more than 255
+/// available locales, two available locales with the same [`Locale`]
+/// identifier, missing locale directory.
+///
+/// ```compile_fail
+/// embedded_i18n::i18n!(available_locales = ["fr-CA", "fr_ca"], default_locale = "fr-CA");
+/// ```
+pub use embedded_i18n_macros::i18n;
 
-/// Replaces a message key with its translation, at compile time.
+#[doc(hidden)]
+pub use embedded_i18n_macros::__expand;
+
+/// Translates a message key, at compile time.
 ///
-/// The key is a string literal, or a C string literal to get a `&'static CStr`
-/// for FFI. An optional `context` disambiguates identical source strings.
+/// `t!(KEY, items...)` where `KEY` is a string literal, or a C string literal
+/// to get a `&'static CStr` for FFI, and each item is one of:
+///
+/// - `context = "menu"`: a message context, to disambiguate identical source
+///   strings (gettext `msgctxt`, or the `menu.Open` key);
+/// - `locale = <expr>`: translates into this locale instead of the current one;
+/// - `count = <integer>`: selects the plural form, and is the `{count}`
+///   placeholder;
+/// - `select = <expr>`: selects a variant (`replied.male`, `replied.other`) by
+///   `AsRef<str>`, `other` being the default. When both `select` and `count`
+///   are given, `select` picks the variant and `count` is an ordinary
+///   argument (the `{count}` placeholder): it selects no plural form;
+/// - `name = <expr>` or `"name" => <expr>`: an argument, the value of the
+///   `{name}` (or rust-i18n `%{name}`) placeholder, optionally followed by a
+///   format specification: `sn = 123 : {:08}`.
+///
+/// Without arguments nor `count`, the result is a `&'static str`: in
+/// single-locale mode, a literal usable in `const` items.
 ///
 /// ```
 /// use core::ffi::CStr;
-/// use embedded_i18n::translate;
+/// embedded_i18n::i18n!();
+/// use embedded_i18n::t;
 ///
-/// const GREETING: &str = translate!("greeting");
+/// const GREETING: &str = t!("greeting");
 /// assert_eq!(GREETING, "Hello");
 ///
-/// let greeting: &'static CStr = translate!(c"greeting");
+/// let greeting: &'static CStr = t!(c"greeting");
 /// assert_eq!(greeting.to_bytes(), b"Hello");
 ///
-/// assert_eq!(translate!(context = "menu", "Open"), "Open (menu)");
+/// assert_eq!(t!("Open", context = "menu"), "Open (menu)");
+/// assert_eq!(t!("replied", select = "female"), "She replied");
 /// ```
 ///
-/// In single-locale builds the expansion is a literal, usable in `const` items
-/// and as the format string of `format!` or `write!`. A key missing from every
-/// locale of the chain is a compile error:
-///
-/// ```compile_fail
-/// let _ = embedded_i18n::translate!("no such key");
-/// ```
-pub use embedded_i18n_macros::translate;
-
-/// Builds [`core::fmt::Arguments`] from a translated format string.
-///
-/// The translation is the format string, so placeholders are checked at compile
-/// time and can capture variables in scope. Usable wherever `format_args!` is,
-/// without allocation.
+/// With arguments or `count`, the result implements [`core::fmt::Display`]
+/// and formats on demand, without allocation. Arguments are evaluated once and
+/// borrowed, as by `format_args!`.
 ///
 /// ```
-/// use embedded_i18n::translate_args;
+/// embedded_i18n::i18n!();
+/// use embedded_i18n::t;
 ///
 /// let name = "Ada";
-/// let text = format!("{}", translate_args!("with_named_args", count = 3));
-/// assert_eq!(text, "Hello Ada, you have 3 messages");
+/// assert_eq!(
+///     t!("with_named_args", name = name, count = 3).to_string(),
+///     "Hello Ada, you have 3 messages"
+/// );
+/// assert_eq!(t!("files", count = 1).to_string(), "1 file");
+/// assert_eq!(t!("with_arg", "value" => 7 : {:03}).to_string(), "Value: 007");
 /// ```
-pub use embedded_i18n_macros::translate_args;
-
-/// Writes a translated, formatted message into a [`core::fmt::Write`].
 ///
-/// Expands to `write!(writer, translation, arguments...)` and returns
-/// [`core::fmt::Result`].
+/// A placeholder without an argument, a key missing from every locale of the
+/// chain, arguments given to a C string key, or a crate without [`i18n!`] are
+/// compile errors:
 ///
+/// ```compile_fail
+/// embedded_i18n::i18n!();
+/// // The translation uses {count}.
+/// let _ = embedded_i18n::t!("with_named_args", name = "Ada");
 /// ```
-/// use core::fmt::Write;
-/// use embedded_i18n::translate_write;
 ///
-/// let mut output = String::new();
-/// translate_write!(&mut output, "with_arg", 42)?;
-/// assert_eq!(output, "Value: 42");
-/// # Ok::<(), core::fmt::Error>(())
+/// ```compile_fail
+/// embedded_i18n::i18n!();
+/// let _ = embedded_i18n::t!("no such key");
 /// ```
-pub use embedded_i18n_macros::translate_write;
-
-/// Selects the plural form of a message matching a count.
 ///
-/// Forms are CLDR categories (`files.one`, `files.other`...) in JSON, YAML, TOML
-/// and Fluent files, or `msgstr[N]` with the `Plural-Forms` rule in gettext
-/// files. The rule is compiled into an `if` / `match` on the count; the result
-/// is a `&'static str`, or a `&'static CStr` with a C string key.
-///
+/// ```compile_fail
+/// embedded_i18n::i18n!();
+/// let _ = embedded_i18n::t!(c"greeting", name = 1);
 /// ```
-/// use embedded_i18n::translate_plural;
 ///
-/// assert_eq!(translate_plural!("files", 1), "{count} file");
-/// assert_eq!(translate_plural!("files", 5u32), "{count} files");
+/// ```compile_fail
+/// // No `embedded_i18n::i18n!()` in this crate.
+/// let _ = embedded_i18n::t!("greeting");
 /// ```
-pub use embedded_i18n_macros::translate_plural;
-
-/// Writes the plural form of a message matching a count into a
-/// [`core::fmt::Write`].
-///
-/// The count is bound to `count`, so forms can use the `{count}` placeholder.
-/// Extra format arguments can follow the count.
-///
-/// ```
-/// use core::fmt::Write;
-/// use embedded_i18n::translate_plural_write;
-///
-/// let mut output = String::new();
-/// translate_plural_write!(&mut output, "files", 3)?;
-/// assert_eq!(output, "3 files");
-/// # Ok::<(), core::fmt::Error>(())
-/// ```
-pub use embedded_i18n_macros::translate_plural_write;
-
-/// Selects a variant of a message from a value implementing `AsRef<str>`.
-///
-/// Variants are nested keys (`replied.male`, `replied.other`); the `other`
-/// variant is required and used for every value without its own variant.
-///
-/// ```
-/// use embedded_i18n::translate_select;
-///
-/// assert_eq!(translate_select!("replied", "female"), "She replied");
-/// assert_eq!(translate_select!("replied", "unknown"), "They replied");
-/// ```
-pub use embedded_i18n_macros::translate_select;
-
-/// Writes the variant of a message selected from a value implementing
-/// `AsRef<str>` into a [`core::fmt::Write`].
-///
-/// ```
-/// use core::fmt::Write;
-/// use embedded_i18n::translate_select_write;
-///
-/// let mut output = String::new();
-/// translate_select_write!(&mut output, "replied", "male")?;
-/// assert_eq!(output, "He replied");
-/// # Ok::<(), core::fmt::Error>(())
-/// ```
-pub use embedded_i18n_macros::translate_select_write;
-
-const DEFAULT_LOCALE: &str = "en";
-const DEFAULT_FALLBACK_LOCALE: &str = "en";
-
-/// Returns the locale selected at build time with `EMBEDDED_I18N_LOCALE`, `en`
-/// by default.
-///
-/// ```
-/// assert_eq!(embedded_i18n::get_locale(), "en");
-/// ```
-pub const fn get_locale() -> &'static str {
-    match option_env!("EMBEDDED_I18N_LOCALE") {
-        Some(locale) => locale,
-        None => DEFAULT_LOCALE,
-    }
+#[macro_export]
+macro_rules! t {
+    ($($tokens:tt)*) => {
+        embedded_i18n_requires_i18n_at_the_crate_root!(@t $($tokens)*)
+    };
 }
 
-/// Returns the fallback locales selected at build time with
-/// `EMBEDDED_I18N_FALLBACK`, as written (comma separated), `en` by default.
-pub const fn get_fallback_locale() -> &'static str {
-    match option_env!("EMBEDDED_I18N_FALLBACK") {
-        Some(locale) => locale,
-        None => DEFAULT_FALLBACK_LOCALE,
-    }
+/// Returns the name of the locale the calling crate translates into, as a
+/// `&'static str`.
+///
+/// In single-locale mode it is the `default_locale` literal; with several
+/// available locales, the one the [current locale](set_locale) resolves to.
+///
+/// ```
+/// embedded_i18n::i18n!();
+///
+/// assert_eq!(embedded_i18n::locale!(), "en");
+/// assert!(!embedded_i18n::is_right_to_left(embedded_i18n::locale!()));
+/// ```
+#[macro_export]
+macro_rules! locale {
+    () => {
+        embedded_i18n_requires_i18n_at_the_crate_root!(@locale)
+    };
 }
 
-/// Reads `EMBEDDED_I18N_LOCALE` from the environment of the running process, for
-/// build scripts. Available with the `std` feature.
+/// Lists the locales embedded in the calling crate, as
+/// `&'static [&'static str]`, in configuration order.
+///
+/// ```
+/// embedded_i18n::i18n!();
+///
+/// assert_eq!(embedded_i18n::available_locales!(), ["en"]);
+/// ```
+#[macro_export]
+macro_rules! available_locales {
+    () => {
+        embedded_i18n_requires_i18n_at_the_crate_root!(@available)
+    };
+}
+
+/// Returns the locale of the operating system, from the `LC_ALL`,
+/// `LC_MESSAGES` and `LANG` environment variables, as a BCP 47 style tag
+/// (`fr_FR.UTF-8` becomes `fr-FR`). Available with the `std` feature.
+///
+/// The first variable that holds a usable value wins; empty values and the
+/// `C` and `POSIX` locales are ignored. Returns `None` when no variable holds a
+/// usable value: each one is unset, empty, `C` or `POSIX`.
+///
+/// This reads the POSIX environment only. Windows and macOS GUI applications
+/// should use the [`sys-locale`](https://crates.io/crates/sys-locale) crate
+/// instead, and pass its result to [`set_locale`].
+///
+/// ```
+/// # #[cfg(feature = "std")]
+/// if let Some(locale) = embedded_i18n::system_locale() {
+///     embedded_i18n::set_locale(&locale);
+/// }
+/// ```
 #[cfg(feature = "std")]
-pub fn get_locale_build() -> std::string::String {
-    use std::string::ToString;
-
-    match std::env::var("EMBEDDED_I18N_LOCALE") {
-        Ok(locale) => locale,
-        Err(_) => DEFAULT_LOCALE.to_string(),
-    }
+pub fn system_locale() -> Option<std::string::String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .into_iter()
+        .find_map(|name| normalize_system_locale(&std::env::var(name).ok()?))
 }
 
-/// Reads `EMBEDDED_I18N_FALLBACK` from the environment of the running process,
-/// for build scripts. Available with the `std` feature.
+/// Turns a POSIX locale value (`fr_FR.UTF-8@euro`) into a tag (`fr-FR`).
 #[cfg(feature = "std")]
-pub fn get_fallback_locale_build() -> std::string::String {
-    use std::string::ToString;
-
-    match std::env::var("EMBEDDED_I18N_FALLBACK") {
-        Ok(locale) => locale,
-        Err(_) => DEFAULT_FALLBACK_LOCALE.to_string(),
+fn normalize_system_locale(value: &str) -> Option<std::string::String> {
+    let end = value.find(['.', '@']).unwrap_or(value.len());
+    let base = value[..end].trim();
+    if base.is_empty() || base == "C" || base == "POSIX" {
+        return None;
     }
+    Some(base.replace('_', "-"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "std")]
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[test]
-    fn default_locale_is_en() {
-        assert_eq!(get_locale(), "en");
-    }
-
-    #[test]
-    fn default_fallback_is_en() {
-        assert_eq!(get_fallback_locale(), "en");
-    }
 
     #[test]
     fn get_locale_ranges_supported_locales() {
@@ -348,51 +384,22 @@ mod tests {
         assert!(get_locale_ranges("xx").is_none());
         assert!(get_locale_ranges("").is_none());
     }
+}
 
-    #[cfg(feature = "std")]
-    #[test]
-    fn get_locale_build_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let locale = get_locale_build();
-        assert_eq!(locale, "en");
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn get_fallback_locale_build_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let fallback = get_fallback_locale_build();
-        assert_eq!(fallback, "en");
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn get_locale_build_with_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let previous = std::env::var("EMBEDDED_I18N_LOCALE");
-        unsafe { std::env::set_var("EMBEDDED_I18N_LOCALE", "fr") };
-        assert_eq!(get_locale_build(), "fr");
-        match previous {
-            Ok(val) => unsafe { std::env::set_var("EMBEDDED_I18N_LOCALE", val) },
-            Err(_) => unsafe { std::env::remove_var("EMBEDDED_I18N_LOCALE") },
-        }
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn get_fallback_locale_build_with_env() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        let previous = std::env::var("EMBEDDED_I18N_FALLBACK");
-        unsafe { std::env::set_var("EMBEDDED_I18N_FALLBACK", "de") };
-        assert_eq!(get_fallback_locale_build(), "de");
-        match previous {
-            Ok(val) => unsafe { std::env::set_var("EMBEDDED_I18N_FALLBACK", val) },
-            Err(_) => unsafe { std::env::remove_var("EMBEDDED_I18N_FALLBACK") },
-        }
-    }
+#[cfg(all(test, feature = "std"))]
+mod system_locale_tests {
+    use super::*;
 
     #[test]
-    fn translate_macro_is_reexported() {
-        let _ = translate!("greeting");
+    fn normalizes_system_locales() {
+        assert_eq!(
+            normalize_system_locale("fr_FR.UTF-8@euro").as_deref(),
+            Some("fr-FR")
+        );
+        assert_eq!(normalize_system_locale("de_DE").as_deref(), Some("de-DE"));
+        assert_eq!(normalize_system_locale("C"), None);
+        assert_eq!(normalize_system_locale("POSIX"), None);
+        assert_eq!(normalize_system_locale(""), None);
+        assert_eq!(normalize_system_locale("C.UTF-8"), None);
     }
 }

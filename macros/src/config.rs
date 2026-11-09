@@ -306,6 +306,10 @@ impl Config {
     /// Resolve the configuration of an `i18n!` call.
     ///
     /// Precedence: environment, then arguments, then `[package.metadata.i18n]`, then defaults.
+    /// The environment applies to every crate of the build, so a locale override
+    /// missing from a crate's configured `available_locales` resolves to its
+    /// closest locale there (same identifier, then same language), else to the
+    /// crate's own default locale.
     pub fn from_i18n_args(
         args: TokenStream2,
         manifest_dir: &Path,
@@ -319,16 +323,34 @@ impl Config {
             .path
             .or(metadata.load_path)
             .unwrap_or_else(|| DEFAULT_PATH.to_string());
-        let default_locale = environment
-            .locale()
-            .or(options.default_locale)
+        let configured_default = options
+            .default_locale
             .or(metadata.default_locale)
             .unwrap_or_else(|| DEFAULT_LOCALE.to_string());
-        let available_locales = environment
-            .locales()
-            .or(options.available_locales)
-            .or(metadata.available_locales)
-            .unwrap_or_else(|| vec![default_locale.clone()]);
+        let configured_locales = options.available_locales.or(metadata.available_locales);
+        let (default_locale, available_locales) = match (
+            environment.locale(),
+            environment.locales(),
+            configured_locales,
+        ) {
+            (locale, Some(locales), _) => (locale.unwrap_or(configured_default), locales),
+            // The overrides apply to every crate of the build: a crate that does
+            // not list the requested locale takes its closest available one.
+            (Some(locale), None, Some(locales)) => {
+                let default_locale = if locales.contains(&locale) {
+                    locale
+                } else {
+                    crate::locale_id::resolve(&locales, &locale)
+                        .map_or(configured_default, |index| locales[index].clone())
+                };
+                (default_locale, locales)
+            }
+            (locale, None, Some(locales)) => (locale.unwrap_or(configured_default), locales),
+            (locale, None, None) => {
+                let default_locale = locale.unwrap_or(configured_default);
+                (default_locale.clone(), vec![default_locale])
+            }
+        };
         let fallback = options
             .fallback
             .or(metadata.fallback)
@@ -571,6 +593,65 @@ bidi-isolation = true
         .unwrap();
         assert_eq!(config.default_locale, "fr");
         assert_eq!(config.available_locales, strings(&["en", "fr"]));
+    }
+
+    fn with_locale_override(locale: &str, args: TokenStream2) -> syn::Result<Config> {
+        let directory = tempfile::tempdir().unwrap();
+        let environment = Environment {
+            locale: Some(locale.to_string()),
+            locales: None,
+        };
+        Config::from_i18n_args(args, directory.path(), &environment)
+    }
+
+    #[test]
+    fn locale_override_resolves_against_configured_locales() {
+        let args = || quote! { default_locale = "en", available_locales = ["en", "fr-CA", "fr"] };
+        let exact = with_locale_override("fr", args()).unwrap();
+        assert_eq!(exact.default_locale, "fr");
+        let normalized = with_locale_override("FR_ca", args()).unwrap();
+        assert_eq!(normalized.default_locale, "fr-CA");
+        let language = with_locale_override("fr-BE", args()).unwrap();
+        assert_eq!(language.default_locale, "fr");
+        let unknown = with_locale_override("de", args()).unwrap();
+        assert_eq!(unknown.default_locale, "en");
+        assert_eq!(unknown.available_locales, strings(&["en", "fr-CA", "fr"]));
+    }
+
+    #[test]
+    fn locale_override_resolves_against_metadata_locales() {
+        let directory = manifest_with(
+            "[package.metadata.i18n]\ndefault-locale = \"fr\"\navailable-locales = [\"en\", \"fr\"]\n",
+        );
+        let environment = Environment {
+            locale: Some("de".to_string()),
+            locales: None,
+        };
+        let config = Config::from_i18n_args(quote! {}, directory.path(), &environment).unwrap();
+        assert_eq!(config.default_locale, "fr");
+        assert_eq!(config.available_locales, strings(&["en", "fr"]));
+    }
+
+    #[test]
+    fn locale_override_without_configured_locales_is_the_only_locale() {
+        let config = with_locale_override("de", quote! { default_locale = "en" }).unwrap();
+        assert_eq!(config.default_locale, "de");
+        assert_eq!(config.available_locales, strings(&["de"]));
+    }
+
+    #[test]
+    fn locale_override_outside_the_locales_override_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let environment = Environment {
+            locale: Some("de".to_string()),
+            locales: Some("en,fr".to_string()),
+        };
+        assert_eq!(
+            Config::from_i18n_args(quote! {}, directory.path(), &environment)
+                .unwrap_err()
+                .to_string(),
+            "default locale \"de\" is not in available_locales [\"en\", \"fr\"]"
+        );
     }
 
     #[test]

@@ -1,9 +1,8 @@
+embedded_i18n::i18n!("locales", available_locales = ["en", "fr"]);
+
 use core::fmt::Write;
 
-use embedded_i18n::{
-    LOCALES, locale, locale_index, set_locale, set_locale_index, translate, translate_args,
-    translate_plural, translate_select, translate_write,
-};
+use embedded_i18n::{Locale, available_locales, locale, set_locale, t};
 
 struct Buffer {
     bytes: [u8; 64],
@@ -31,33 +30,66 @@ fn written(write: impl FnOnce(&mut Buffer) -> core::fmt::Result) -> Buffer {
     buffer
 }
 
+// The only test of this file that touches the global locale: tests run in
+// parallel threads and the locale is shared by the whole program.
 #[test]
 fn switches_locale_at_runtime() {
-    if LOCALES[..] != ["en", "fr"] {
-        return;
-    }
+    assert_eq!(available_locales!(), &["en", "fr"]);
 
-    assert_eq!(locale(), "en");
-    assert_eq!(translate!("greeting"), "Hello");
+    assert_eq!(locale!(), "en");
+    assert_eq!(t!("greeting"), "Hello");
 
-    set_locale("fr").unwrap();
-    assert_eq!(locale_index(), 1);
-    assert_eq!(locale(), "fr");
-    assert_eq!(translate!("greeting"), "Bonjour");
-    assert_eq!(translate!(c"greeting").to_bytes(), b"Bonjour");
-    assert_eq!(translate!("missing_in_french"), "Only in English");
-    assert_eq!(translate_plural!("files", 0), "{count} fichier");
-    assert_eq!(translate_select!("replied", "female"), "Elle a répondu");
-    let buffer = written(|buffer| translate_write!(buffer, "with_arg", 42));
+    set_locale("fr");
+    assert_eq!(locale!(), "fr");
+    assert_eq!(t!("greeting"), "Bonjour");
+    assert_eq!(t!(c"greeting").to_bytes(), b"Bonjour");
+    assert_eq!(t!("missing_in_french"), "Only in English");
+    assert_eq!(t!("files", count = 0).to_string(), "0 fichier");
+    assert_eq!(t!("replied", select = "female"), "Elle a répondu");
+    assert_eq!(t!("with_arg"), "Valeur : {value}");
+    let buffer = written(|buffer| write!(buffer, "{}", t!("with_arg", value = 42)));
     assert_eq!(&buffer.bytes[..buffer.length], "Valeur : 42".as_bytes());
-    let buffer = written(|buffer| write!(buffer, "{}", translate_args!("with_arg", 7)));
+    let buffer = written(|buffer| write!(buffer, "{}", t!("with_arg", value = 7)));
     assert_eq!(&buffer.bytes[..buffer.length], "Valeur : 7".as_bytes());
 
-    assert!(set_locale("de").is_err());
-    assert!(set_locale_index(2).is_err());
-    assert_eq!(locale(), "fr");
+    // An unknown locale resolves to the default one.
+    set_locale("de");
+    assert_eq!(locale!(), "en");
 
-    set_locale_index(0).unwrap();
-    assert_eq!(translate!("greeting"), "Hello");
-    assert_eq!(translate_plural!("files", 0), "{count} files");
+    set_locale("en");
+    assert_eq!(t!("greeting"), "Hello");
+    assert_eq!(t!("files", count = 0).to_string(), "0 files");
+
+    // Resolution of regional, unknown, empty and upper case tags.
+    set_locale("fr-BE");
+    assert_eq!(t!("greeting"), "Bonjour");
+    assert_eq!(locale!(), "fr");
+    set_locale("de");
+    assert_eq!(t!("greeting"), "Hello");
+    assert_eq!(locale!(), "en");
+    set_locale("");
+    assert_eq!(t!("greeting"), "Hello");
+    set_locale("FR");
+    assert_eq!(t!("files", count = 1).to_string(), "1 fichier");
+    assert_eq!(available_locales!(), &["en", "fr"]);
+}
+
+#[test]
+fn explicit_locales_ignore_the_global_one() {
+    let some_string = String::from("fr");
+    assert_eq!(t!("greeting", locale = "fr"), "Bonjour");
+    assert_eq!(t!("greeting", locale = Locale::new("en")), "Hello");
+    assert_eq!(t!("greeting", locale = some_string.as_str()), "Bonjour");
+    assert_eq!(t!("greeting", locale = "fr-CA"), "Bonjour");
+    assert_eq!(t!("greeting", locale = "de"), "Hello");
+    assert_eq!(
+        t!("files", count = 2, locale = "fr").to_string(),
+        "2 fichiers"
+    );
+}
+
+#[test]
+fn explicit_locales_in_const_context() {
+    const FRENCH: &str = t!("greeting", locale = "fr");
+    assert_eq!(FRENCH, "Bonjour");
 }
