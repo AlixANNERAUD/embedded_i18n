@@ -24,13 +24,21 @@ use syn::{Lit, LitCStr, LitStr};
 
 use plural::{Category, Expression};
 
+#[allow(dead_code)] // wired in by the t! expansion
+mod call;
+#[allow(dead_code)] // wired in by the i18n! expansion
+mod config;
 #[cfg(feature = "backend-fluent")]
 mod fluent;
 #[cfg(feature = "backend-json")]
 mod json;
 mod locale;
+#[allow(dead_code)] // wired in by the i18n! expansion
+mod locale_id;
 #[cfg(feature = "backend-mo")]
 mod mo;
+#[allow(dead_code)] // wired in by the t! expansion
+mod placeholder;
 #[cfg_attr(
     not(any(feature = "backend-po", feature = "backend-mo")),
     allow(dead_code)
