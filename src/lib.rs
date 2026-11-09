@@ -94,7 +94,7 @@
 //! # Features
 //!
 //! - `alloc`: `String` and `Vec` returning variants of the helpers.
-//! - `std`: enables `alloc` and the build environment getters.
+//! - `std`: enables `alloc` and [`system_locale`].
 //!
 //! # Guide
 //!
