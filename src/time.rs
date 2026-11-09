@@ -1,6 +1,6 @@
 use core::fmt::{self, Write};
 
-use crate::date_time::{DATE_TIME_LOCALE, DateTimeLocale};
+use crate::date_time::{DateTimeLocale, ENGLISH};
 
 #[cfg(feature = "alloc")]
 use alloc::string::String;
@@ -96,9 +96,7 @@ fn days_in_month(year: i64, month: usize) -> i64 {
 /// ```
 /// use embedded_i18n::{date_time_locale, DateTimeFormatter};
 ///
-/// let formatter = DateTimeFormatter::new()
-///     .with_locale(date_time_locale("fr"))
-///     .with_utc_offset(2 * 3600);
+/// let formatter = DateTimeFormatter::new(date_time_locale("fr")).with_utc_offset(2 * 3600);
 ///
 /// let mut output = String::new();
 /// formatter.write(&mut output, 1_791_884_800, "%A %d %B %Y, %H:%M %z")?;
@@ -111,19 +109,10 @@ pub struct DateTimeFormatter {
     offset: i32,
 }
 
-impl Default for DateTimeFormatter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl DateTimeFormatter {
-    /// Creates a formatter for the build locale ([`DATE_TIME_LOCALE`]) and UTC.
-    pub const fn new() -> Self {
-        DateTimeFormatter {
-            locale: DATE_TIME_LOCALE,
-            offset: 0,
-        }
+    /// Creates a formatter for the given names and patterns, in UTC.
+    pub const fn new(locale: DateTimeLocale) -> Self {
+        DateTimeFormatter { locale, offset: 0 }
     }
 
     /// Uses the names and patterns of another locale.
@@ -174,7 +163,9 @@ impl DateTimeFormatter {
     /// `write!` or `format_args!` without allocation.
     ///
     /// ```
-    /// let formatter = embedded_i18n::DateTimeFormatter::new();
+    /// use embedded_i18n::{DateTimeFormatter, date_time_locale};
+    ///
+    /// let formatter = DateTimeFormatter::new(date_time_locale("en"));
     /// let text = format!("Updated {}", formatter.display(0, "%Y-%m-%d"));
     /// assert_eq!(text, "Updated 1970-01-01");
     /// ```
@@ -307,8 +298,8 @@ impl fmt::Display for DateTimeDisplay<'_> {
     }
 }
 
-/// Writes a Unix timestamp formatted with a pattern, in the build locale and
-/// UTC. See [`DateTimeFormatter`] for the tokens.
+/// Writes a Unix timestamp formatted with a pattern, in English and UTC. For
+/// another locale, use [`DateTimeFormatter`]. See [`DateTimeFormatter`] for the tokens.
 ///
 /// ```
 /// let mut output = String::new();
@@ -321,14 +312,14 @@ pub fn write_unix_timestamp<W: Write>(
     unix_timestamp: i64,
     pattern: &str,
 ) -> fmt::Result {
-    DateTimeFormatter::new().write(writer, unix_timestamp, pattern)
+    DateTimeFormatter::new(ENGLISH).write(writer, unix_timestamp, pattern)
 }
 
-/// Formats a Unix timestamp into a `String`, in the build locale and UTC.
-/// Available with the `alloc` feature.
+/// Formats a Unix timestamp into a `String`, in English and UTC. For another
+/// locale, use [`DateTimeFormatter`]. Available with the `alloc` feature.
 #[cfg(feature = "alloc")]
 pub fn format_unix_timestamp(unix_timestamp: i64, pattern: &str) -> String {
-    DateTimeFormatter::new().format(unix_timestamp, pattern)
+    DateTimeFormatter::new(ENGLISH).format(unix_timestamp, pattern)
 }
 
 const fn hour_12(hour_24: u8) -> u8 {
@@ -638,7 +629,7 @@ mod localized_tests {
 
     #[test]
     fn english_names_and_patterns() {
-        let formatter = DateTimeFormatter::new();
+        let formatter = DateTimeFormatter::new(ENGLISH);
         assert_renders(
             &formatter,
             0,
@@ -651,7 +642,7 @@ mod localized_tests {
 
     #[test]
     fn french_names_and_patterns() {
-        let formatter = DateTimeFormatter::new().with_locale(date_time_locale("fr"));
+        let formatter = DateTimeFormatter::new(date_time_locale("fr"));
         assert_renders(
             &formatter,
             OCTOBER_13_2026,
@@ -664,7 +655,7 @@ mod localized_tests {
 
     #[test]
     fn standalone_months() {
-        let formatter = DateTimeFormatter::new().with_locale(date_time_locale("ru"));
+        let formatter = DateTimeFormatter::new(date_time_locale("ru"));
         assert_renders(
             &formatter,
             OCTOBER_13_2026,
@@ -676,36 +667,41 @@ mod localized_tests {
 
     #[test]
     fn localized_am_pm() {
-        let formatter = DateTimeFormatter::new().with_locale(date_time_locale("ko"));
+        let formatter = DateTimeFormatter::new(date_time_locale("ko"));
         assert_renders(&formatter, OCTOBER_13_2026, "%X", "오전 09:46:40");
         assert_renders(&formatter, OCTOBER_13_2026 + 6 * 3600, "%p", "오후");
     }
 
     #[test]
     fn utc_offset_shifts_time_and_prints_z() {
-        let paris = DateTimeFormatter::new().with_utc_offset(2 * 3600);
+        let paris = DateTimeFormatter::new(ENGLISH).with_utc_offset(2 * 3600);
         assert_renders(&paris, OCTOBER_13_2026, "%H:%M %z", "11:46 +0200");
-        let newfoundland = DateTimeFormatter::new().with_utc_offset(-(3 * 3600 + 1800));
+        let newfoundland = DateTimeFormatter::new(ENGLISH).with_utc_offset(-(3 * 3600 + 1800));
         assert_renders(
             &newfoundland,
             OCTOBER_13_2026,
             "%d %H:%M %z",
             "13 06:16 -0330",
         );
-        let before_midnight = DateTimeFormatter::new().with_utc_offset(-10 * 3600);
+        let before_midnight = DateTimeFormatter::new(ENGLISH).with_utc_offset(-10 * 3600);
         assert_renders(&before_midnight, OCTOBER_13_2026, "%A %d", "Monday 12");
-        assert_renders(&DateTimeFormatter::new(), 0, "%z", "+0000");
+        assert_renders(&DateTimeFormatter::new(ENGLISH), 0, "%z", "+0000");
     }
 
     #[test]
     fn weekday_before_epoch() {
-        assert_renders(&DateTimeFormatter::new(), -1, "%A", "Wednesday");
-        assert_renders(&DateTimeFormatter::new(), -86_400 * 4, "%A", "Sunday");
+        assert_renders(&DateTimeFormatter::new(ENGLISH), -1, "%A", "Wednesday");
+        assert_renders(
+            &DateTimeFormatter::new(ENGLISH),
+            -86_400 * 4,
+            "%A",
+            "Sunday",
+        );
     }
 
     #[test]
     fn patterns_do_not_expand_recursively() {
-        let formatter = DateTimeFormatter::new().with_locale(DateTimeLocale {
+        let formatter = DateTimeFormatter::new(DateTimeLocale {
             date: "%x",
             ..date_time_locale("en")
         });
@@ -714,7 +710,7 @@ mod localized_tests {
 
     #[test]
     fn display_adapter() {
-        let formatter = DateTimeFormatter::new();
+        let formatter = DateTimeFormatter::new(ENGLISH);
         let mut buffer = Buffer {
             bytes: [0; 128],
             length: 0,
@@ -730,7 +726,7 @@ mod localized_tests {
             length: 120,
         };
         assert!(
-            DateTimeFormatter::new()
+            DateTimeFormatter::new(ENGLISH)
                 .write(&mut buffer, 0, "%A %B")
                 .is_err()
         );

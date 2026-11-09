@@ -53,7 +53,7 @@ const _: () = assert!(LOCALE_COUNT <= u8::MAX as usize);
 /// Embedded locales, in the order of `EMBEDDED_I18N_LOCALES`, or the build
 /// locale alone.
 pub const LOCALES: [&str; LOCALE_COUNT] = {
-    let mut locales = [crate::get_locale(); LOCALE_COUNT];
+    let mut locales = ["en"; LOCALE_COUNT];
     let mut index = 0;
     while index < LOCALE_COUNT {
         if let Some(locale) = entry(embedded_locales(), index) {
@@ -105,7 +105,7 @@ pub const fn find_locale(locale: &str) -> Option<usize> {
 
 /// Index of the locale active at startup: `EMBEDDED_I18N_LOCALE` if embedded,
 /// otherwise the first embedded locale.
-pub const DEFAULT_LOCALE_INDEX: usize = match find_locale(crate::get_locale()) {
+pub const DEFAULT_LOCALE_INDEX: usize = match find_locale("en") {
     Some(index) => index,
     None => 0,
 };

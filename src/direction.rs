@@ -69,16 +69,6 @@ pub const fn is_right_to_left(locale: &str) -> bool {
     false
 }
 
-/// Returns whether the build locale ([`get_locale`](crate::get_locale)) is
-/// written right to left, to mirror layouts at compile time.
-///
-/// ```
-/// const MIRRORED: bool = embedded_i18n::is_locale_right_to_left();
-/// ```
-pub const fn is_locale_right_to_left() -> bool {
-    is_right_to_left(crate::get_locale())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +97,5 @@ mod tests {
     #[test]
     fn usable_in_const() {
         const { assert!(is_right_to_left("ar-SA")) };
-        const { assert!(!is_locale_right_to_left()) };
     }
 }
