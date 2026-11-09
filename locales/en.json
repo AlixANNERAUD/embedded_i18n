@@ -1,7 +1,7 @@
 {
   "greeting": "Hello",
   "farewell": "Goodbye",
-  "with_arg": "Value: {}",
+  "with_arg": "Value: {value}",
   "c_greeting": "Hello from C",
   "missing_in_french": "Only in English",
   "with_named_args": "Hello {name}, you have {count} messages",

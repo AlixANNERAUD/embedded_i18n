@@ -1,5 +1,6 @@
-//! Locale identifiers and the global current locale.
+//! Locale identifiers, the global current locale and the `Display` wrapper of `t!`.
 
+use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Language value of tags that are not a 1 to 3 letter language code.
@@ -89,7 +90,7 @@ const fn pack(tag: &str) -> u32 {
 /// `0x7FFF` and hash the whole tag. [`Locale::NONE`] (identifier `0`) is the
 /// empty tag.
 ///
-/// ```ignore
+/// ```
 /// use embedded_i18n::Locale;
 ///
 /// assert_eq!(Locale::new("fr_CA"), Locale::new("FR-ca"));
@@ -128,7 +129,7 @@ static CURRENT: AtomicU32 = AtomicU32::new(0);
 /// store, so this works on targets without compare-and-swap and needs no
 /// allocation. An empty tag restores the unset state.
 ///
-/// ```ignore
+/// ```
 /// embedded_i18n::set_locale("fr");
 /// ```
 pub fn set_locale(locale: &str) {
@@ -139,6 +140,16 @@ pub fn set_locale(locale: &str) {
 #[doc(hidden)]
 pub fn __current_locale() -> u32 {
     CURRENT.load(Ordering::Relaxed)
+}
+
+/// Formats with a closure: the value of a `t!` call with arguments.
+#[doc(hidden)]
+pub struct __FormatWith<F>(pub F);
+
+impl<F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result> fmt::Display for __FormatWith<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        (self.0)(f)
+    }
 }
 
 #[cfg(test)]

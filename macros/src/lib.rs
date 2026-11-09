@@ -5,39 +5,40 @@
 //! macros, and provides the runtime items their expansions refer to. Its API
 //! and versioning follow `embedded-i18n`.
 //!
-//! The macros read the locale files of the calling crate at compile time,
-//! configured by the `EMBEDDED_I18N_*` environment variables, and expand to
-//! string literals or to selections between them. The locale file formats are
-//! enabled by the `backend-*` features, which `embedded-i18n` forwards.
+//! `i18n!` resolves the configuration of the calling crate (its arguments,
+//! `[package.metadata.i18n]` and the `EMBEDDED_I18N_LOCALE` /
+//! `EMBEDDED_I18N_LOCALES` overrides) and hands it to a crate-local
+//! `macro_rules!`, through which `t!`, `locale!` and `available_locales!`
+//! reach `__expand!`. `__expand!` reads the locale files at compile time and
+//! expands to string literals or to selections between them. The locale file
+//! formats are enabled by the `backend-*` features, which `embedded-i18n`
+//! forwards.
 #![cfg_attr(doc, deny(missing_docs))]
 
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use proc_macro::TokenStream;
-use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::quote;
-use syn::parse::{Parse, ParseStream};
-use syn::{Lit, LitCStr, LitStr};
+use proc_macro2::{Delimiter, Group, Ident, Literal, Span, TokenStream as TokenStream2, TokenTree};
+use quote::{ToTokens, quote};
+use syn::{LitCStr, LitStr};
 
+use call::{Call, Key, LocaleArgument};
+use config::{Config, Environment};
 use plural::{Category, Expression};
 
-#[allow(dead_code)] // wired in by the t! expansion
 mod call;
-#[allow(dead_code)] // wired in by the i18n! expansion
 mod config;
 #[cfg(feature = "backend-fluent")]
 mod fluent;
 #[cfg(feature = "backend-json")]
 mod json;
 mod locale;
-#[allow(dead_code)] // wired in by the i18n! expansion
 mod locale_id;
 #[cfg(feature = "backend-mo")]
 mod mo;
-#[allow(dead_code)] // wired in by the t! expansion
 mod placeholder;
 #[cfg_attr(
     not(any(feature = "backend-po", feature = "backend-mo")),
@@ -156,7 +157,7 @@ impl Catalog {
         };
         let message = if self.strict && found {
             format!(
-                "{} is missing from the primary locale {} (EMBEDDED_I18N_STRICT is set)",
+                "{} is missing from the primary locale {} (strict mode)",
                 subject,
                 list(&self.primary)
             )
@@ -246,133 +247,6 @@ impl Catalog {
     }
 }
 
-struct Catalogs {
-    multiple: bool,
-    catalogs: Vec<Result<Catalog, String>>,
-}
-
-const MAXIMUM_LOCALES: usize = 255;
-
-static CATALOGS: LazyLock<Catalogs> = LazyLock::new(|| {
-    let embedded = std::env::var("EMBEDDED_I18N_LOCALES").unwrap_or_default();
-    let embedded = embedded_locales(&embedded);
-    let locale = std::env::var("EMBEDDED_I18N_LOCALE").unwrap_or_else(|_| "en".to_string());
-    let load = |locale: &str| -> Result<Catalog, String> {
-        let manifest_directory = std::env::var("CARGO_MANIFEST_DIR")
-            .map_err(|_| "CARGO_MANIFEST_DIR is not set".to_string())?;
-        let fallback = std::env::var("EMBEDDED_I18N_FALLBACK").unwrap_or_else(|_| "en".to_string());
-        let path = locales_directory(
-            Path::new(&manifest_directory),
-            std::env::var("EMBEDDED_I18N_PATH").ok().as_deref(),
-        );
-        let options = Options {
-            strict: is_enabled(std::env::var("EMBEDDED_I18N_STRICT").ok().as_deref()),
-            isolate: is_enabled(
-                std::env::var("EMBEDDED_I18N_BIDI_ISOLATION")
-                    .ok()
-                    .as_deref(),
-            ),
-        };
-        load_catalog(&path, locale, &fallback, options)
-    };
-    if embedded.is_empty() {
-        return Catalogs {
-            multiple: false,
-            catalogs: vec![load(&locale)],
-        };
-    }
-    if embedded.len() > MAXIMUM_LOCALES {
-        return Catalogs {
-            multiple: true,
-            catalogs: vec![Err(format!(
-                "EMBEDDED_I18N_LOCALES lists {} locales, at most {} are supported",
-                embedded.len(),
-                MAXIMUM_LOCALES
-            ))],
-        };
-    }
-    Catalogs {
-        multiple: true,
-        catalogs: embedded.into_iter().map(load).collect(),
-    }
-});
-
-fn embedded_locales(list: &str) -> Vec<&str> {
-    list.split(',')
-        .map(str::trim_ascii)
-        .filter(|locale| !locale.is_empty())
-        .collect()
-}
-
-type Expansion = fn(TokenStream2, &Result<Catalog, String>) -> syn::Result<TokenStream2>;
-
-fn locale_index() -> TokenStream2 {
-    quote! { ::embedded_i18n::locale_index() }
-}
-
-fn localized(
-    input: TokenStream2,
-    catalogs: &Catalogs,
-    expand: Expansion,
-    combine: fn(Vec<TokenStream2>) -> TokenStream2,
-) -> syn::Result<TokenStream2> {
-    if !catalogs.multiple {
-        return expand(input, &catalogs.catalogs[0]);
-    }
-    let mut values = Vec::new();
-    let mut errors: Option<syn::Error> = None;
-    for catalog in &catalogs.catalogs {
-        match expand(input.clone(), catalog) {
-            Ok(value) => values.push(value),
-            Err(error) => match &mut errors {
-                Some(errors) => errors.combine(error),
-                None => errors = Some(error),
-            },
-        }
-    }
-    match errors {
-        Some(errors) => Err(errors),
-        None if values.len() == 1 => Ok(values.remove(0)),
-        None => Ok(combine(values)),
-    }
-}
-
-fn combine_array(values: Vec<TokenStream2>) -> TokenStream2 {
-    let index = locale_index();
-    quote! { (&[#(#values),*])[#index] }
-}
-
-fn combine_match(mut values: Vec<TokenStream2>) -> TokenStream2 {
-    let index = locale_index();
-    let last = values.pop();
-    let indexes = 0..values.len();
-    quote! {
-        match #index {
-            #(#indexes => #values,)*
-            _ => #last,
-        }
-    }
-}
-
-fn expand_args_localized(input: TokenStream2, catalogs: &Catalogs) -> syn::Result<TokenStream2> {
-    if !catalogs.multiple {
-        return expand_args(input, &catalogs.catalogs[0]);
-    }
-    let formatter = proc_macro2::Ident::new("formatter", Span::mixed_site());
-    let body = localized(
-        quote! { #formatter, #input },
-        catalogs,
-        expand_write,
-        combine_match,
-    )?;
-    Ok(quote! {
-        ::core::format_args!(
-            "{}",
-            ::embedded_i18n::__FormatWith(|#formatter: &mut ::core::fmt::Formatter<'_>| #body)
-        )
-    })
-}
-
 #[derive(Clone, Copy, Default)]
 struct Options {
     strict: bool,
@@ -380,22 +254,6 @@ struct Options {
 }
 
 const PSEUDO_LOCALE: &str = "pseudo";
-
-fn is_enabled(value: Option<&str>) -> bool {
-    value.is_some_and(|value| {
-        !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "" | "0" | "false" | "no" | "off"
-        )
-    })
-}
-
-fn locales_directory(manifest_directory: &Path, configured: Option<&str>) -> PathBuf {
-    match configured {
-        Some(path) if !path.is_empty() => manifest_directory.join(path),
-        _ => manifest_directory.join("locales"),
-    }
-}
 
 fn load_catalog(
     path: &Path,
@@ -461,126 +319,480 @@ fn load_locale(path: &Path, locale: &str) -> Result<Option<(PathBuf, Translation
     Ok(None)
 }
 
-enum Key {
-    Str(LitStr),
-    CStr(LitCStr),
+/// The catalogs of a configuration, one per available locale, in configuration order.
+type Catalogs = Arc<Vec<Result<Catalog, String>>>;
+
+/// Catalogs already loaded by this proc-macro process, by configuration.
+static CACHE: LazyLock<Mutex<HashMap<Config, Catalogs>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn load_catalogs(config: &Config) -> Vec<Result<Catalog, String>> {
+    let fallback = config.fallback.join(",");
+    let options = Options {
+        strict: config.strict,
+        isolate: config.bidi_isolation,
+    };
+    config
+        .available_locales
+        .iter()
+        .map(|locale| load_catalog(&config.path, locale, &fallback, options))
+        .collect()
 }
 
-impl Key {
-    fn span(&self) -> Span {
-        match self {
-            Key::Str(literal) => literal.span(),
-            Key::CStr(literal) => literal.span(),
-        }
-    }
-
-    fn value(&self) -> syn::Result<String> {
-        match self {
-            Key::Str(literal) => Ok(literal.value()),
-            Key::CStr(literal) => literal
-                .value()
-                .into_string()
-                .map_err(|_| syn::Error::new(literal.span(), "C string key must be valid UTF-8")),
-        }
-    }
+/// The catalogs of `config`, loaded on first use.
+fn catalogs(config: &Config) -> Catalogs {
+    let mut cache = CACHE.lock().unwrap_or_else(PoisonError::into_inner);
+    cache
+        .entry(config.clone())
+        .or_insert_with(|| Arc::new(load_catalogs(config)))
+        .clone()
 }
 
-impl Parse for Key {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        match input.parse::<Lit>()? {
-            Lit::Str(literal) => Ok(Key::Str(literal)),
-            Lit::CStr(literal) => Ok(Key::CStr(literal)),
-            other => Err(syn::Error::new(
-                other.span(),
-                "expected a string literal or a C string literal",
-            )),
-        }
-    }
+/// Index of the default locale among the available locales.
+fn default_index(config: &Config) -> usize {
+    config
+        .available_locales
+        .iter()
+        .position(|locale| *locale == config.default_locale)
+        .unwrap_or(0)
 }
 
-struct Message {
-    context: Option<LitStr>,
-    key: Key,
-}
-
-impl Message {
-    fn keys(&self, name: &str) -> Vec<String> {
-        match &self.context {
-            Some(context) => vec![
-                format!("{}{}{}", context.value(), CONTEXT_SEPARATOR, name),
-                format!("{}.{}", context.value(), name),
-            ],
-            None => vec![name.to_string()],
-        }
-    }
-
-    fn describe(&self, name: &str) -> String {
-        match &self.context {
-            Some(context) => format!("{:?} in context {:?}", name, context.value()),
-            None => format!("{:?}", name),
-        }
+/// Adds `error` to the errors collected so far.
+fn push_error(errors: &mut Option<syn::Error>, error: syn::Error) {
+    match errors {
+        Some(errors) => errors.combine(error),
+        None => *errors = Some(error),
     }
 }
 
-impl Parse for Message {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let context = if input.peek(syn::Ident) && input.peek2(syn::Token![=]) {
-            let option: syn::Ident = input.parse()?;
-            if option != "context" {
-                return Err(syn::Error::new(
-                    option.span(),
-                    format!("unknown option `{}`, expected `context`", option),
-                ));
+/// Resolves and validates the configuration of an `i18n!` call.
+fn i18n_config(
+    args: TokenStream2,
+    manifest_dir: &Path,
+    environment: &Environment,
+) -> syn::Result<Config> {
+    let config = Config::from_i18n_args(args, manifest_dir, environment)?;
+    let mut names = std::iter::once(&config.default_locale)
+        .chain(&config.available_locales)
+        .chain(&config.fallback);
+    if names.any(|name| name.trim().is_empty()) {
+        return Err(syn::Error::new(
+            Span::call_site(),
+            "locale names cannot be empty",
+        ));
+    }
+    locale_id::check_distinct(&config.available_locales)
+        .map_err(|error| syn::Error::new(Span::call_site(), error))?;
+    Ok(config)
+}
+
+/// Expands `i18n!`: the crate-local configuration macro, rebuild tracking and,
+/// with several locales, the crate's resolution function.
+fn expand_i18n(
+    args: TokenStream2,
+    manifest_dir: &Path,
+    environment: &Environment,
+) -> syn::Result<TokenStream2> {
+    let config = i18n_config(args, manifest_dir, environment)?;
+
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut messages: Vec<&str> = Vec::new();
+    let loaded = catalogs(&config);
+    for catalog in loaded.iter() {
+        match catalog {
+            Ok(catalog) => {
+                for file in &catalog.files {
+                    if !files.contains(file) {
+                        files.push(file.clone());
+                    }
+                }
             }
-            input.parse::<syn::Token![=]>()?;
-            let context = input.parse()?;
-            input.parse::<syn::Token![,]>()?;
-            Some(context)
-        } else {
-            None
+            Err(message) => {
+                if !messages.contains(&message.as_str()) {
+                    messages.push(message);
+                }
+            }
+        }
+    }
+    let mut errors = None;
+    for message in messages {
+        push_error(&mut errors, syn::Error::new(Span::call_site(), message));
+    }
+    if let Some(errors) = errors {
+        return Err(errors);
+    }
+
+    let manifest = Config::manifest_file(manifest_dir);
+    if manifest.is_file() {
+        files.push(manifest);
+    }
+    let files = files.iter().map(|file| file.to_string_lossy().into_owned());
+    let config_tokens = config.to_tokens();
+    let resolver = config
+        .is_multiple()
+        .then(|| locale_id::resolver(&config.available_locales, default_index(&config)));
+
+    Ok(quote! {
+        #[doc(hidden)]
+        #[allow(unused_macros)]
+        macro_rules! embedded_i18n_requires_i18n_at_the_crate_root {
+            ($($tokens:tt)*) => {
+                ::embedded_i18n::__expand!(#config_tokens $($tokens)*)
+            };
+        }
+        #(const _: &[u8] = include_bytes!(#files);)*
+        const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALE");
+        const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALES");
+        #resolver
+        #[doc(hidden)]
+        #[allow(dead_code)]
+        const EMBEDDED_I18N_I18N_IS_CALLED_ONCE_PER_CRATE: () = ();
+    })
+}
+
+/// Expands `__expand!({ <configuration> } @t ...)`, `(.. @locale)` or `(.. @available)`.
+fn expand_request(input: TokenStream2) -> syn::Result<TokenStream2> {
+    let malformed = || {
+        syn::Error::new(
+            Span::call_site(),
+            "expected the configuration generated by `i18n!`, then `@t`, `@locale` or `@available`",
+        )
+    };
+    let mut tokens = input.into_iter();
+    let config = match tokens.next() {
+        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Brace => {
+            Config::from_resolved(TokenTree::Group(group).into())?
+        }
+        _ => return Err(malformed()),
+    };
+    let marker = match (tokens.next(), tokens.next()) {
+        (Some(TokenTree::Punct(at)), Some(TokenTree::Ident(marker))) if at.as_char() == '@' => {
+            marker
+        }
+        _ => return Err(malformed()),
+    };
+    let rest: TokenStream2 = tokens.collect();
+    let no_argument = |rest: TokenStream2| match rest.into_iter().next() {
+        Some(token) => Err(syn::Error::new(token.span(), "unexpected argument")),
+        None => Ok(()),
+    };
+    match marker.to_string().as_str() {
+        "t" => {
+            let call: Call = syn::parse2(rest)?;
+            expand_t(&config, &catalogs(&config), &call)
+        }
+        "locale" => no_argument(rest).map(|()| expand_locale(&config)),
+        "available" => no_argument(rest).map(|()| expand_available(&config)),
+        _ => Err(malformed()),
+    }
+}
+
+/// The index of the current locale, resolved by the crate's resolution function.
+fn current_index() -> TokenStream2 {
+    quote! { crate::__embedded_i18n_resolve(::embedded_i18n::__current_locale()) }
+}
+
+/// Expands `locale!()`.
+fn expand_locale(config: &Config) -> TokenStream2 {
+    if !config.is_multiple() {
+        let locale = &config.default_locale;
+        return quote! { #locale };
+    }
+    let locales = &config.available_locales;
+    let index = current_index();
+    quote! { (&[#(#locales),*])[#index] }
+}
+
+/// Expands `available_locales!()`.
+fn expand_available(config: &Config) -> TokenStream2 {
+    let locales = &config.available_locales;
+    let binding = Ident::new("locales", Span::mixed_site());
+    quote! {
+        {
+            let #binding: &'static [&'static str] = &[#(#locales),*];
+            #binding
+        }
+    }
+}
+
+/// Wraps an expression in an invisible group, so that it keeps its precedence.
+fn grouped(expr: &syn::Expr) -> TokenStream2 {
+    Group::new(Delimiter::None, expr.to_token_stream()).into_token_stream()
+}
+
+/// Which locale a `t!` call translates into.
+enum Target {
+    /// One locale known at compile time; `discard` is a locale expression
+    /// evaluated for its side effects only (single-locale mode).
+    Fixed {
+        index: usize,
+        discard: Option<TokenStream2>,
+    },
+    /// The locale index computed at runtime by this expression.
+    Runtime(TokenStream2),
+}
+
+fn target(config: &Config, call: &Call) -> Target {
+    let default = default_index(config);
+    if !config.is_multiple() {
+        let discard = match &call.locale {
+            Some(LocaleArgument::Expr(expr)) => {
+                let expr = grouped(expr);
+                Some(quote! {
+                    let _: ::embedded_i18n::Locale = ::core::convert::Into::into(#expr);
+                })
+            }
+            _ => None,
         };
-        Ok(Message {
-            context,
-            key: input.parse()?,
-        })
+        return Target::Fixed {
+            index: default,
+            discard,
+        };
+    }
+    match &call.locale {
+        Some(LocaleArgument::Literal(tag)) => Target::Fixed {
+            index: locale_id::resolve(&config.available_locales, &tag.value()).unwrap_or(default),
+            discard: None,
+        },
+        Some(LocaleArgument::Expr(expr)) => {
+            let expr = grouped(expr);
+            Target::Runtime(quote! {
+                crate::__embedded_i18n_resolve(::embedded_i18n::Locale::from(#expr).id())
+            })
+        }
+        None => Target::Runtime(current_index()),
     }
 }
 
-struct Input {
-    message: Message,
-}
-
-impl Parse for Input {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let message = input.parse()?;
-        if input.peek(syn::Token![,]) {
-            input.parse::<syn::Token![,]>()?;
+/// Runs `expand` for each index, collecting every error.
+fn each<T>(
+    indexes: &[usize],
+    mut expand: impl FnMut(usize) -> syn::Result<T>,
+) -> syn::Result<Vec<T>> {
+    let mut values = Vec::new();
+    let mut errors = None;
+    for &index in indexes {
+        match expand(index) {
+            Ok(value) => values.push(value),
+            Err(error) => push_error(&mut errors, error),
         }
-        if !input.is_empty() {
-            return Err(input.error("unexpected argument"));
-        }
-        Ok(Input { message })
+    }
+    match errors {
+        Some(errors) => Err(errors),
+        None => Ok(values),
     }
 }
 
-fn translation(message: &Message, catalog: &Result<Catalog, String>) -> syn::Result<TokenStream2> {
-    let key = &message.key;
-    let span = key.span();
-    let catalog = catalog
-        .as_ref()
-        .map_err(|error| syn::Error::new(span, error))?;
-    let name = key.value()?;
+/// `match index { 0 => v0, .., _ => vN }`.
+fn match_index(index: &TokenStream2, mut values: Vec<TokenStream2>) -> TokenStream2 {
+    let last = values.pop();
+    let indexes = (0..values.len()).map(Literal::usize_unsuffixed);
+    quote! {
+        match #index {
+            #(#indexes => #values,)*
+            _ => #last,
+        }
+    }
+}
 
-    let keys = message.keys(&name);
-    let value = catalog.lookup(&keys, catalog.strict).ok_or_else(|| {
-        catalog.not_found(
-            span,
-            format!("translation for {}", message.describe(&name)),
-            catalog.lookup(&keys, false).is_some(),
+/// Expands `t!`.
+fn expand_t(
+    config: &Config,
+    catalogs: &[Result<Catalog, String>],
+    call: &Call,
+) -> syn::Result<TokenStream2> {
+    let name = call.key.value()?;
+    let target = target(config, call);
+    let indexes: Vec<usize> = match &target {
+        Target::Fixed { index, .. } => vec![*index],
+        Target::Runtime(_) => (0..catalogs.len()).collect(),
+    };
+    if call.returns_str() {
+        expand_str(catalogs, call, &name, target, &indexes)
+    } else {
+        expand_display(config, catalogs, call, &name, target, &indexes)
+    }
+}
+
+/// Expands a `t!` call without argument nor `count` to a `&'static str` (or `CStr`).
+fn expand_str(
+    catalogs: &[Result<Catalog, String>],
+    call: &Call,
+    name: &str,
+    target: Target,
+    indexes: &[usize],
+) -> syn::Result<TokenStream2> {
+    let select = call.select.as_ref().map(grouped);
+    let arm = |text: &str| literal(&call.key, text, name);
+    let mut values = each(indexes, |index| {
+        selection(call, name, &catalogs[index], select.as_ref(), None, &arm)
+    })?;
+    Ok(match target {
+        Target::Fixed { discard: None, .. } => values.remove(0),
+        Target::Fixed {
+            discard: Some(discard),
+            ..
+        } => {
+            let value = values.remove(0);
+            quote! { { #discard #value } }
+        }
+        Target::Runtime(index) if select.is_none() => quote! { (&[#(#values),*])[#index] },
+        Target::Runtime(index) => match_index(&index, values),
+    })
+}
+
+/// Expands a `t!` call with arguments or `count` to a value implementing `Display`.
+fn expand_display(
+    config: &Config,
+    catalogs: &[Result<Catalog, String>],
+    call: &Call,
+    name: &str,
+    target: Target,
+    indexes: &[usize],
+) -> syn::Result<TokenStream2> {
+    let mixed = Span::mixed_site();
+    let formatter = Ident::new("f", mixed);
+    let count = Ident::new("__count", mixed);
+    let select = Ident::new("__select", mixed);
+    let index = Ident::new("__index", mixed);
+
+    let mut values = Vec::new();
+    let mut patterns = Vec::new();
+    // Placeholder name and binding of each value usable by the translations.
+    let mut bindings: Vec<(&str, Span, Ident)> = Vec::new();
+    for (position, argument) in call.arguments.iter().enumerate() {
+        let binding = Ident::new(&format!("__a{position}"), mixed);
+        let value = grouped(&argument.value);
+        values.push(quote! { &#value });
+        patterns.push(binding.to_token_stream());
+        bindings.push((&argument.name, argument.span, binding));
+    }
+    if let Some(value) = &call.count {
+        let value = grouped(value);
+        values.push(quote! { &#value });
+        patterns.push(count.to_token_stream());
+        bindings.push(("count", call.key.span(), count.clone()));
+    }
+    if let Some(value) = &call.select {
+        let value = grouped(value);
+        values.push(quote! { &#value });
+        patterns.push(select.to_token_stream());
+    }
+    match &target {
+        Target::Fixed {
+            discard: Some(discard),
+            ..
+        } => {
+            values.push(quote! { { #discard } });
+            patterns.push(quote! { _ });
+        }
+        Target::Fixed { discard: None, .. } => {}
+        Target::Runtime(expression) => {
+            values.push(expression.clone());
+            patterns.push(index.to_token_stream());
+        }
+    }
+
+    let names: Vec<&str> = bindings.iter().map(|(name, _, _)| *name).collect();
+    let specs: Vec<(&str, &str)> = call
+        .arguments
+        .iter()
+        .filter_map(|argument| Some((argument.name.as_str(), argument.spec.as_deref()?)))
+        .collect();
+    let span = call.key.span();
+    let select = call.select.as_ref().map(|_| select.to_token_stream());
+
+    let mut bodies = each(indexes, |position| {
+        let locale = config.available_locales[position].as_str();
+        let arm = |text: &str| -> syn::Result<TokenStream2> {
+            let template = placeholder::template(text).map_err(|error| {
+                syn::Error::new(
+                    span,
+                    format!("translation of {name:?} in locale {locale:?}: {error}"),
+                )
+            })?;
+            placeholder::check(&template, &names, name, locale)
+                .map_err(|error| syn::Error::new(span, error))?;
+            let format = LitStr::new(&placeholder::apply_specs(&template, &specs), span);
+            let arguments = template.placeholders.iter().map(|placeholder| {
+                let (_, span, binding) = bindings
+                    .iter()
+                    .find(|(name, _, _)| name == placeholder)
+                    .expect("checked against the argument names");
+                let placeholder = Ident::new(placeholder, *span);
+                quote! { #placeholder = #binding }
+            });
+            Ok(quote! {
+                #formatter.write_fmt(::core::format_args!(#format #(, #arguments)*))
+            })
+        };
+        let count = call.count.as_ref().map(|_| &count);
+        selection(
+            call,
+            name,
+            &catalogs[position],
+            select.as_ref(),
+            count,
+            &arm,
         )
     })?;
 
-    literal(key, value, &name)
+    let body = match &target {
+        Target::Fixed { .. } => bodies.remove(0),
+        Target::Runtime(_) => match_index(&index.to_token_stream(), bodies),
+    };
+    Ok(quote! {
+        match (#(#values,)*) {
+            (#(#patterns,)*) => ::embedded_i18n::__FormatWith(
+                move |#formatter: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
+                    #body
+                }
+            ),
+        }
+    })
+}
+
+/// The translation of a call in one catalog: a select variant, a plural form
+/// (when `count` is given and the message has plural forms) or the message,
+/// each turned into an expression by `arm`.
+fn selection(
+    call: &Call,
+    name: &str,
+    catalog: &Result<Catalog, String>,
+    select: Option<&TokenStream2>,
+    count: Option<&Ident>,
+    arm: &dyn Fn(&str) -> syn::Result<TokenStream2>,
+) -> syn::Result<TokenStream2> {
+    let span = call.key.span();
+    let catalog = catalog
+        .as_ref()
+        .map_err(|error| syn::Error::new(span, error))?;
+    let keys = call.keys(name);
+
+    if let Some(value) = select {
+        return select_selection(call, name, catalog, value, arm);
+    }
+    if let Some(count) = count {
+        if catalog.plural(&keys, false).is_some() {
+            let n = Ident::new("n", Span::mixed_site());
+            let selection = plural_selection(call, name, catalog, arm)?;
+            return Ok(quote! {
+                {
+                    let #n: u64 = (*#count as i64).unsigned_abs();
+                    #selection
+                }
+            });
+        }
+    }
+
+    let value = catalog.lookup(&keys, catalog.strict).ok_or_else(|| {
+        catalog.not_found(
+            span,
+            format!("translation for {}", call.describe(name)),
+            catalog.lookup(&keys, false).is_some(),
+        )
+    })?;
+    arm(value)
 }
 
 fn literal(key: &Key, value: &str, name: &str) -> syn::Result<TokenStream2> {
@@ -604,23 +816,19 @@ fn literal(key: &Key, value: &str, name: &str) -> syn::Result<TokenStream2> {
 }
 
 fn plural_selection(
-    message: &Message,
-    catalog: &Result<Catalog, String>,
-    arm: impl Fn(TokenStream2) -> TokenStream2,
+    call: &Call,
+    name: &str,
+    catalog: &Catalog,
+    arm: &dyn Fn(&str) -> syn::Result<TokenStream2>,
 ) -> syn::Result<TokenStream2> {
-    let key = &message.key;
-    let span = key.span();
-    let catalog = catalog
-        .as_ref()
-        .map_err(|error| syn::Error::new(span, error))?;
-    let name = key.value()?;
-    let n = proc_macro2::Ident::new("n", Span::mixed_site());
+    let span = call.key.span();
+    let n = Ident::new("n", Span::mixed_site());
 
-    let keys = message.keys(&name);
+    let keys = call.keys(name);
     let plural = catalog.plural(&keys, catalog.strict).ok_or_else(|| {
         catalog.not_found(
             span,
-            format!("plural translation for {}", message.describe(&name)),
+            format!("plural translation for {}", call.describe(name)),
             catalog.plural(&keys, false).is_some(),
         )
     })?;
@@ -631,7 +839,7 @@ fn plural_selection(
             let index = rule.unwrap_or(&germanic).tokens(&n);
             let arms = forms
                 .iter()
-                .map(|form| literal(key, form, &name).map(&arm))
+                .map(|form| arm(form))
                 .collect::<syn::Result<Vec<_>>>()?;
             let first = &arms[0];
             let indexes = (0..arms.len() as u64).collect::<Vec<_>>();
@@ -668,7 +876,7 @@ fn plural_selection(
                     span,
                     format!(
                         "plural translation for {} in locale {:?} is missing the {} form{}",
-                        message.describe(&name),
+                        call.describe(name),
                         locale,
                         missing.join(", "),
                         if missing.len() > 1 { "s" } else { "" }
@@ -690,15 +898,11 @@ fn plural_selection(
                     branches.push((condition.tokens(&n), value));
                 }
             }
-            let other = arm(literal(
-                key,
-                form(Category::Other).unwrap_or_default(),
-                &name,
-            )?);
+            let other = arm(form(Category::Other).unwrap_or_default())?;
             let conditions = branches.iter().map(|(condition, _)| condition);
             let values = branches
                 .iter()
-                .map(|(_, value)| literal(key, value, &name).map(&arm))
+                .map(|(_, value)| arm(value))
                 .collect::<syn::Result<Vec<_>>>()?;
             Ok(quote! {
                 #(if #conditions { #values } else)* { #other }
@@ -708,25 +912,20 @@ fn plural_selection(
 }
 
 fn select_selection(
-    message: &Message,
-    value: &syn::Expr,
-    catalog: &Result<Catalog, String>,
-    arm: impl Fn(TokenStream2) -> TokenStream2,
+    call: &Call,
+    name: &str,
+    catalog: &Catalog,
+    value: &TokenStream2,
+    arm: &dyn Fn(&str) -> syn::Result<TokenStream2>,
 ) -> syn::Result<TokenStream2> {
-    let key = &message.key;
-    let span = key.span();
-    let catalog = catalog
-        .as_ref()
-        .map_err(|error| syn::Error::new(span, error))?;
-    let name = key.value()?;
-
-    let keys = message.keys(&name);
+    let span = call.key.span();
+    let keys = call.keys(name);
     let variants = catalog.select(&keys, catalog.strict).ok_or_else(|| {
         catalog.not_found(
             span,
             format!(
                 "select translation for {} with an `other` variant",
-                message.describe(&name)
+                call.describe(name)
             ),
             catalog.select(&keys, false).is_some(),
         )
@@ -736,7 +935,7 @@ fn select_selection(
     let mut patterns = Vec::new();
     let mut values = Vec::new();
     for (variant, text) in variants {
-        let value = arm(literal(key, text, &name)?);
+        let value = arm(text)?;
         if variant == "other" {
             other = Some(value);
         } else {
@@ -762,323 +961,36 @@ fn select_selection(
     })
 }
 
-struct SelectInput {
-    message: Message,
-    value: syn::Expr,
-}
-
-impl Parse for SelectInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let PluralInput { message, count } = input.parse()?;
-        Ok(SelectInput {
-            message,
-            value: count,
-        })
-    }
-}
-
-struct SelectWriteInput {
-    writer: syn::Expr,
-    message: Message,
-    value: syn::Expr,
-    arguments: TokenStream2,
-}
-
-impl Parse for SelectWriteInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let PluralWriteInput {
-            writer,
-            message,
-            count,
-            arguments,
-        } = input.parse()?;
-        Ok(SelectWriteInput {
-            writer,
-            message,
-            value: count,
-            arguments,
-        })
-    }
-}
-
-fn expand_select(
-    input: TokenStream2,
-    catalog: &Result<Catalog, String>,
-) -> syn::Result<TokenStream2> {
-    let input: SelectInput = syn::parse2(input)?;
-    select_selection(&input.message, &input.value, catalog, |literal| literal)
-}
-
-fn expand_select_write(
-    input: TokenStream2,
-    catalog: &Result<Catalog, String>,
-) -> syn::Result<TokenStream2> {
-    let input: SelectWriteInput = syn::parse2(input)?;
-    let writer = &input.writer;
-    let arguments = &input.arguments;
-    select_selection(&input.message, &input.value, catalog, |literal| {
-        quote! { ::core::write!(#writer, #literal, #arguments) }
-    })
-}
-
-struct PluralInput {
-    message: Message,
-    count: syn::Expr,
-}
-
-impl Parse for PluralInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let message = input.parse()?;
-        input.parse::<syn::Token![,]>()?;
-        let count = input.parse()?;
-        if input.peek(syn::Token![,]) {
-            input.parse::<syn::Token![,]>()?;
+#[cfg_attr(
+    doc,
+    doc = "Configures the translations of the calling crate.\n\nSee [`embedded_i18n::i18n!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.i18n.html)."
+)]
+#[proc_macro]
+pub fn i18n(input: TokenStream) -> TokenStream {
+    let result = match std::env::var_os("CARGO_MANIFEST_DIR") {
+        Some(manifest_dir) => {
+            let environment = Environment {
+                locale: std::env::var("EMBEDDED_I18N_LOCALE").ok(),
+                locales: std::env::var("EMBEDDED_I18N_LOCALES").ok(),
+            };
+            expand_i18n(input.into(), Path::new(&manifest_dir), &environment)
         }
-        if !input.is_empty() {
-            return Err(input.error("unexpected argument"));
-        }
-        Ok(PluralInput { message, count })
-    }
-}
-
-struct PluralWriteInput {
-    writer: syn::Expr,
-    message: Message,
-    count: syn::Expr,
-    arguments: TokenStream2,
-}
-
-impl Parse for PluralWriteInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let writer = input.parse()?;
-        input.parse::<syn::Token![,]>()?;
-        let message: Message = input.parse()?;
-        if let Key::CStr(literal) = &message.key {
-            return Err(syn::Error::new(
-                literal.span(),
-                "expected a string literal, C strings cannot be used as format strings",
-            ));
-        }
-        input.parse::<syn::Token![,]>()?;
-        let count = input.parse()?;
-        if !input.is_empty() {
-            input.parse::<syn::Token![,]>()?;
-        }
-        Ok(PluralWriteInput {
-            writer,
-            message,
-            count,
-            arguments: input.parse()?,
-        })
-    }
-}
-
-fn plural_block(count: &syn::Expr, selection: TokenStream2) -> TokenStream2 {
-    let n = proc_macro2::Ident::new("n", Span::mixed_site());
-    quote! {
-        {
-            let count = #count;
-            let #n: u64 = (count as i64).unsigned_abs();
-            #selection
-        }
-    }
-}
-
-fn expand_plural(
-    input: TokenStream2,
-    catalog: &Result<Catalog, String>,
-) -> syn::Result<TokenStream2> {
-    let input: PluralInput = syn::parse2(input)?;
-    let selection = plural_selection(&input.message, catalog, |literal| literal)?;
-    Ok(plural_block(&input.count, selection))
-}
-
-fn expand_plural_write(
-    input: TokenStream2,
-    catalog: &Result<Catalog, String>,
-) -> syn::Result<TokenStream2> {
-    let input: PluralWriteInput = syn::parse2(input)?;
-    let writer = &input.writer;
-    let arguments = &input.arguments;
-    let selection = plural_selection(&input.message, catalog, |literal| {
-        quote! { ::core::write!(#writer, #literal, #arguments) }
-    })?;
-    Ok(plural_block(&input.count, selection))
-}
-
-fn expand(input: TokenStream2, catalog: &Result<Catalog, String>) -> syn::Result<TokenStream2> {
-    let input: Input = syn::parse2(input)?;
-    translation(&input.message, catalog)
-}
-
-struct FormatInput {
-    message: Message,
-    arguments: TokenStream2,
-}
-
-impl Parse for FormatInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let message: Message = input.parse()?;
-        if let Key::CStr(literal) = &message.key {
-            return Err(syn::Error::new(
-                literal.span(),
-                "expected a string literal, C strings cannot be used as format strings",
-            ));
-        }
-        if !input.is_empty() {
-            input.parse::<syn::Token![,]>()?;
-        }
-        Ok(FormatInput {
-            message,
-            arguments: input.parse()?,
-        })
-    }
-}
-
-struct WriteInput {
-    writer: syn::Expr,
-    format: FormatInput,
-}
-
-impl Parse for WriteInput {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let writer = input.parse()?;
-        input.parse::<syn::Token![,]>()?;
-        Ok(WriteInput {
-            writer,
-            format: input.parse()?,
-        })
-    }
-}
-
-fn expand_args(
-    input: TokenStream2,
-    catalog: &Result<Catalog, String>,
-) -> syn::Result<TokenStream2> {
-    let input: FormatInput = syn::parse2(input)?;
-    let format = translation(&input.message, catalog)?;
-    let arguments = input.arguments;
-    Ok(quote! { ::core::format_args!(#format, #arguments) })
-}
-
-fn expand_write(
-    input: TokenStream2,
-    catalog: &Result<Catalog, String>,
-) -> syn::Result<TokenStream2> {
-    let input: WriteInput = syn::parse2(input)?;
-    let writer = input.writer;
-    let format = translation(&input.format.message, catalog)?;
-    let arguments = input.format.arguments;
-    Ok(quote! { ::core::write!(#writer, #format, #arguments) })
-}
-
-fn expand_track_locales(input: TokenStream2, catalogs: &Catalogs) -> syn::Result<TokenStream2> {
-    if !input.is_empty() {
-        return Err(syn::Error::new_spanned(input, "unexpected argument"));
-    }
-    let mut files: Vec<String> = Vec::new();
-    for catalog in &catalogs.catalogs {
-        let catalog = catalog
-            .as_ref()
-            .map_err(|error| syn::Error::new(Span::call_site(), error))?;
-        for file in &catalog.files {
-            let file = file.to_string_lossy().into_owned();
-            if !files.contains(&file) {
-                files.push(file);
-            }
-        }
-    }
-    Ok(quote! {
-        const _: () = {
-            #(const _: &[u8] = include_bytes!(#files);)*
-        };
-    })
+        None => Err(syn::Error::new(
+            Span::call_site(),
+            "CARGO_MANIFEST_DIR is not set",
+        )),
+    };
+    result.unwrap_or_else(syn::Error::into_compile_error).into()
 }
 
 #[cfg_attr(
     doc,
-    doc = "Makes the calling crate depend on the locale files it reads.\n\nSee [`embedded_i18n::track_locales!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.track_locales.html)."
+    doc = "Expands `t!`, `locale!` and `available_locales!` with the configuration forwarded by `i18n!`."
 )]
+#[doc(hidden)]
 #[proc_macro]
-pub fn track_locales(input: TokenStream) -> TokenStream {
-    expand_track_locales(input.into(), &CATALOGS)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Replaces a message key with its translation, at compile time.\n\nSee [`embedded_i18n::translate!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate.html)."
-)]
-#[proc_macro]
-pub fn translate(input: TokenStream) -> TokenStream {
-    localized(input.into(), &CATALOGS, expand, combine_array)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Selects the plural form of a message matching a count.\n\nSee [`embedded_i18n::translate_plural!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate_plural.html)."
-)]
-#[proc_macro]
-pub fn translate_plural(input: TokenStream) -> TokenStream {
-    localized(input.into(), &CATALOGS, expand_plural, combine_match)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Writes the plural form of a message matching a count.\n\nSee [`embedded_i18n::translate_plural_write!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate_plural_write.html)."
-)]
-#[proc_macro]
-pub fn translate_plural_write(input: TokenStream) -> TokenStream {
-    localized(input.into(), &CATALOGS, expand_plural_write, combine_match)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Selects a variant of a message from a value.\n\nSee [`embedded_i18n::translate_select!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate_select.html)."
-)]
-#[proc_macro]
-pub fn translate_select(input: TokenStream) -> TokenStream {
-    localized(input.into(), &CATALOGS, expand_select, combine_match)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Writes the variant of a message selected from a value.\n\nSee [`embedded_i18n::translate_select_write!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate_select_write.html)."
-)]
-#[proc_macro]
-pub fn translate_select_write(input: TokenStream) -> TokenStream {
-    localized(input.into(), &CATALOGS, expand_select_write, combine_match)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Builds format arguments from a translated format string.\n\nSee [`embedded_i18n::translate_args!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate_args.html)."
-)]
-#[proc_macro]
-pub fn translate_args(input: TokenStream) -> TokenStream {
-    expand_args_localized(input.into(), &CATALOGS)
-        .unwrap_or_else(syn::Error::into_compile_error)
-        .into()
-}
-
-#[cfg_attr(
-    doc,
-    doc = "Writes a translated, formatted message.\n\nSee [`embedded_i18n::translate_write!`](https://docs.rs/embedded-i18n/latest/embedded_i18n/macro.translate_write.html)."
-)]
-#[proc_macro]
-pub fn translate_write(input: TokenStream) -> TokenStream {
-    localized(input.into(), &CATALOGS, expand_write, combine_match)
+pub fn __expand(input: TokenStream) -> TokenStream {
+    expand_request(input.into())
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()
 }
@@ -1119,11 +1031,43 @@ mod tests {
         catalog.lookup(&[key.to_string()], false).unwrap()
     }
 
-    fn single(catalog: Result<Catalog, String>) -> Catalogs {
-        Catalogs {
-            multiple: false,
+    /// A resolved configuration embedding `locales`, the first one being the default.
+    fn config(locales: &[&str]) -> Config {
+        Config {
+            path: PathBuf::from("locales"),
+            fallback: vec!["en".to_string()],
+            default_locale: locales[0].to_string(),
+            available_locales: locales.iter().map(|locale| locale.to_string()).collect(),
+            strict: false,
+            bidi_isolation: false,
+        }
+    }
+
+    /// A configuration and its catalogs, one per available locale.
+    struct Fixture {
+        config: Config,
+        catalogs: Vec<Result<Catalog, String>>,
+    }
+
+    impl Fixture {
+        fn expand(&self, input: TokenStream2) -> syn::Result<TokenStream2> {
+            let call: Call = syn::parse2(input)?;
+            expand_t(&self.config, &self.catalogs, &call)
+        }
+    }
+
+    /// Single-locale mode: the catalog is the only available locale, `fr`.
+    fn single(catalog: Result<Catalog, String>) -> Fixture {
+        Fixture {
+            config: config(&["fr"]),
             catalogs: vec![catalog],
         }
+    }
+
+    /// Expands a `t!` call in single-locale mode against `catalog`.
+    fn expand(input: TokenStream2, catalog: &Result<Catalog, String>) -> syn::Result<TokenStream2> {
+        let call: Call = syn::parse2(input)?;
+        expand_t(&config(&["fr"]), std::slice::from_ref(catalog), &call)
     }
 
     fn error(input: TokenStream2, catalog: &Result<Catalog, String>) -> String {
@@ -1131,6 +1075,546 @@ mod tests {
             Ok(tokens) => panic!("expected an error, got {}", tokens),
             Err(error) => error.to_string(),
         }
+    }
+
+    fn locale_catalog(name: &str, translations: Translations) -> Result<Catalog, String> {
+        Ok(Catalog {
+            path: PathBuf::from("locales"),
+            chain: vec![name.to_string()],
+            primary: vec![name.to_string()],
+            strict: false,
+            files: Vec::new(),
+            locales: vec![Locale {
+                name: name.to_string(),
+                translations,
+            }],
+        })
+    }
+
+    fn messages(entries: &[(&str, &str)]) -> Translations {
+        Translations::from(
+            entries
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect::<HashMap<_, _>>(),
+        )
+    }
+
+    fn english_and_french() -> Fixture {
+        Fixture {
+            config: config(&["en", "fr"]),
+            catalogs: vec![
+                locale_catalog(
+                    "en",
+                    messages(&[
+                        ("greeting", "Hello {name}"),
+                        ("files.one", "{count} file"),
+                        ("files.other", "{count} files"),
+                    ]),
+                ),
+                locale_catalog(
+                    "fr",
+                    messages(&[
+                        ("greeting", "Bonjour {name}"),
+                        ("files.one", "{count} fichier"),
+                        ("files.other", "{count} fichiers"),
+                    ]),
+                ),
+            ],
+        }
+    }
+
+    const CURRENT_INDEX: &str =
+        "crate :: __embedded_i18n_resolve (:: embedded_i18n :: __current_locale ())";
+
+    #[test]
+    fn expands_a_literal_in_single_mode() {
+        let tokens = single(catalog(&[("greeting", "Bonjour")]))
+            .expand(quote! { "greeting" })
+            .unwrap();
+        assert_eq!(tokens.to_string(), quote! { "Bonjour" }.to_string());
+    }
+
+    #[test]
+    fn expands_an_array_in_multi_mode() {
+        let tokens = english_and_french().expand(quote! { "greeting" }).unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                (&["Hello {name}", "Bonjour {name}"])[crate::__embedded_i18n_resolve(::embedded_i18n::__current_locale())]
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn resolves_literal_locales_at_compile_time() {
+        let fixture = english_and_french();
+        let tokens = fixture
+            .expand(quote! { "greeting", locale = "fr-CA" })
+            .unwrap();
+        assert_eq!(tokens.to_string(), quote! { "Bonjour {name}" }.to_string());
+        let tokens = fixture
+            .expand(quote! { "greeting", locale = "de" })
+            .unwrap();
+        assert_eq!(tokens.to_string(), quote! { "Hello {name}" }.to_string());
+        let tokens = fixture
+            .expand(quote! { "greeting", name = user, locale = "fr" })
+            .unwrap()
+            .to_string();
+        assert!(!tokens.contains("__embedded_i18n_resolve"), "{}", tokens);
+        assert!(tokens.contains("\"Bonjour {name}\""), "{}", tokens);
+        assert!(!tokens.contains("Hello"), "{}", tokens);
+    }
+
+    #[test]
+    fn formats_only_used_arguments() {
+        let fixture = Fixture {
+            config: config(&["en"]),
+            catalogs: vec![locale_catalog(
+                "en",
+                messages(&[("files.one", "One file"), ("files.other", "{count} files")]),
+            )],
+        };
+        let tokens = fixture
+            .expand(quote! { "files", count = total })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.contains(&quote! { ::core::format_args!("One file") }.to_string()),
+            "{}",
+            tokens
+        );
+        assert!(
+            tokens.contains(
+                &quote! { ::core::format_args!("{count} files", count = __count) }.to_string()
+            ),
+            "{}",
+            tokens
+        );
+        assert!(
+            tokens.contains(&quote! { let n: u64 = (*__count as i64).unsigned_abs(); }.to_string()),
+            "{}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn reports_missing_placeholder_arguments() {
+        assert_eq!(
+            error(
+                quote! { "with_named_args", name = "Ada" },
+                &catalog(&[(
+                    "with_named_args",
+                    "Bonjour {name}, vous avez {count} messages"
+                )])
+            ),
+            "translation of \"with_named_args\" in locale \"fr\" uses the placeholder {count}, which is not an argument of t!"
+        );
+    }
+
+    #[cfg(feature = "backend-json")]
+    fn crate_with_locales(manifest: &str) -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("Cargo.toml"), manifest).unwrap();
+        std::fs::create_dir(directory.path().join("locales")).unwrap();
+        std::fs::write(
+            directory.path().join("locales/en.json"),
+            r#"{"greeting": "Hello"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("locales/fr.json"),
+            r#"{"greeting": "Bonjour"}"#,
+        )
+        .unwrap();
+        directory
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn i18n_emits_the_config_macro_and_tracking() {
+        let directory = crate_with_locales("[package]\nname = \"demo\"\n");
+        let root = directory.path();
+        let tokens = expand_i18n(
+            quote! { available_locales = ["en", "fr"] },
+            root,
+            &Environment::default(),
+        )
+        .unwrap();
+
+        let config = Config::from_i18n_args(
+            quote! { available_locales = ["en", "fr"] },
+            root,
+            &Environment::default(),
+        )
+        .unwrap();
+        let config_tokens = config.to_tokens();
+        let en = root.join("locales/en.json").to_string_lossy().into_owned();
+        let fr = root.join("locales/fr.json").to_string_lossy().into_owned();
+        let manifest = root.join("Cargo.toml").to_string_lossy().into_owned();
+        let resolver = locale_id::resolver(&config.available_locales, 0);
+        let expected = quote! {
+            #[doc(hidden)]
+            #[allow(unused_macros)]
+            macro_rules! embedded_i18n_requires_i18n_at_the_crate_root {
+                ($($tokens:tt)*) => {
+                    ::embedded_i18n::__expand!(#config_tokens $($tokens)*)
+                };
+            }
+            const _: &[u8] = include_bytes!(#en);
+            const _: &[u8] = include_bytes!(#fr);
+            const _: &[u8] = include_bytes!(#manifest);
+            const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALE");
+            const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALES");
+            #resolver
+            #[doc(hidden)]
+            #[allow(dead_code)]
+            const EMBEDDED_I18N_I18N_IS_CALLED_ONCE_PER_CRATE: () = ();
+        };
+        assert_eq!(tokens.to_string(), expected.to_string());
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn i18n_single_locale_has_no_resolver_and_tracks_without_manifest() {
+        let directory = crate_with_locales("");
+        std::fs::remove_file(directory.path().join("Cargo.toml")).unwrap();
+        let tokens = expand_i18n(quote! {}, directory.path(), &Environment::default())
+            .unwrap()
+            .to_string();
+        assert!(!tokens.contains("__embedded_i18n_resolve"), "{}", tokens);
+        assert!(!tokens.contains("Cargo.toml"), "{}", tokens);
+        assert_eq!(tokens.matches("include_bytes").count(), 1, "{}", tokens);
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn i18n_follows_the_environment() {
+        let directory = crate_with_locales("");
+        let environment = Environment {
+            locale: Some("fr".to_string()),
+            locales: Some("en,fr".to_string()),
+        };
+        let tokens = expand_i18n(quote! {}, directory.path(), &environment)
+            .unwrap()
+            .to_string();
+        assert!(tokens.contains("default_locale = \"fr\""), "{}", tokens);
+        assert!(tokens.contains("__embedded_i18n_resolve"), "{}", tokens);
+    }
+
+    #[test]
+    fn i18n_rejects_empty_locale_names() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = |args: TokenStream2| {
+            expand_i18n(args, directory.path(), &Environment::default())
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            error(quote! { default_locale = "", available_locales = [""] }),
+            "locale names cannot be empty"
+        );
+        assert_eq!(
+            error(quote! { available_locales = ["en", " "] }),
+            "locale names cannot be empty"
+        );
+        assert_eq!(
+            error(quote! { fallback = ["en", ""] }),
+            "locale names cannot be empty"
+        );
+    }
+
+    #[test]
+    fn i18n_rejects_identical_locale_identifiers() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = expand_i18n(
+            quote! { default_locale = "fr-CA", available_locales = ["fr-CA", "fr_ca"] },
+            directory.path(),
+            &Environment::default(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            error,
+            "available locales \"fr-CA\" and \"fr_ca\" have the same runtime identifier"
+        );
+    }
+
+    #[test]
+    fn i18n_reports_a_missing_locales_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = expand_i18n(quote! {}, directory.path(), &Environment::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("locales directory not found"),
+            "{}",
+            error
+        );
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn expand_reads_the_forwarded_configuration() {
+        let directory = crate_with_locales("");
+        let config = Config::from_i18n_args(
+            quote! { available_locales = ["en", "fr"] },
+            directory.path(),
+            &Environment::default(),
+        )
+        .unwrap();
+        let config_tokens = config.to_tokens();
+        let tokens =
+            expand_request(quote! { #config_tokens @t "greeting", locale = "fr" }).unwrap();
+        assert_eq!(tokens.to_string(), quote! { "Bonjour" }.to_string());
+        let tokens = expand_request(quote! { #config_tokens @locale }).unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            format!("(& [\"en\" , \"fr\"]) [{}]", CURRENT_INDEX)
+        );
+        let tokens = expand_request(quote! { #config_tokens @available }).unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! { { let locales: &'static [&'static str] = &["en", "fr"]; locales } }
+                .to_string()
+        );
+        assert!(expand_request(quote! { #config_tokens @other }).is_err());
+        assert!(expand_request(quote! { @t "greeting" }).is_err());
+    }
+
+    #[test]
+    fn locale_and_available_in_single_mode() {
+        let config = config(&["fr"]);
+        assert_eq!(expand_locale(&config).to_string(), "\"fr\"");
+        assert_eq!(
+            expand_available(&config).to_string(),
+            quote! { { let locales: &'static [&'static str] = &["fr"]; locales } }.to_string()
+        );
+    }
+
+    #[test]
+    fn single_mode_evaluates_and_ignores_a_locale_expression() {
+        let fixture = single(catalog(&[("greeting", "Bonjour {name}")]));
+        let tokens = fixture
+            .expand(quote! { "greeting", locale = user.locale })
+            .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                {
+                    let _: ::embedded_i18n::Locale = ::core::convert::Into::into(user.locale);
+                    "Bonjour {name}"
+                }
+            }
+            .to_string()
+        );
+        let tokens = fixture
+            .expand(quote! { "greeting", name = user.name, locale = user.locale })
+            .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                match (
+                    &user.name,
+                    { let _: ::embedded_i18n::Locale = ::core::convert::Into::into(user.locale); },
+                ) {
+                    (__a0, _,) => ::embedded_i18n::__FormatWith(
+                        move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
+                            f.write_fmt(::core::format_args!("Bonjour {name}", name = __a0))
+                        }
+                    ),
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn multi_mode_resolves_a_locale_expression_at_runtime() {
+        let tokens = english_and_french()
+            .expand(quote! { "greeting", locale = user.locale })
+            .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                (&["Hello {name}", "Bonjour {name}"])[crate::__embedded_i18n_resolve(
+                    ::embedded_i18n::Locale::from(user.locale).id()
+                )]
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn multi_mode_matches_on_the_index_inside_the_closure() {
+        let tokens = english_and_french()
+            .expand(quote! { "greeting", name = "Ada" })
+            .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                match (&"Ada", crate::__embedded_i18n_resolve(::embedded_i18n::__current_locale()),) {
+                    (__a0, __index,) => ::embedded_i18n::__FormatWith(
+                        move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
+                            match __index {
+                                0 => f.write_fmt(::core::format_args!("Hello {name}", name = __a0)),
+                                _ => f.write_fmt(::core::format_args!("Bonjour {name}", name = __a0)),
+                            }
+                        }
+                    ),
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn multi_mode_reports_every_locale() {
+        let fixture = Fixture {
+            config: config(&["en", "fr"]),
+            catalogs: vec![
+                locale_catalog("en", messages(&[])),
+                locale_catalog("fr", messages(&[("greeting", "Salut {nom}")])),
+            ],
+        };
+        let error = fixture
+            .expand(quote! { "greeting", name = 1 })
+            .err()
+            .unwrap();
+        let messages: Vec<String> = error.into_iter().map(|error| error.to_string()).collect();
+        assert_eq!(
+            messages,
+            [
+                "translation for \"greeting\" not found in locales \"en\" (locales)",
+                "translation of \"greeting\" in locale \"fr\" uses the placeholder {nom}, which is not an argument of t!",
+            ]
+        );
+    }
+
+    #[test]
+    fn applies_argument_specs_and_percent_placeholders() {
+        let fixture = single(catalog(&[
+            ("serial", "SN {sn} {sn:x}"),
+            ("hello", "Hello, %{name} {raw}"),
+        ]));
+        let tokens = fixture
+            .expand(quote! { "serial", sn = 123 : {:08} })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.contains(
+                &quote! { ::core::format_args!("SN {sn:08} {sn:x}", sn = __a0) }.to_string()
+            ),
+            "{}",
+            tokens
+        );
+        let tokens = fixture
+            .expand(quote! { "hello", "name" => user })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.contains(
+                &quote! { ::core::format_args!("Hello, {name} {{raw}}", name = __a0) }.to_string()
+            ),
+            "{}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn without_arguments_placeholders_stay_as_written() {
+        let tokens = single(catalog(&[("hello", "Hello, %{name} {{x}}")]))
+            .expand(quote! { "hello" })
+            .unwrap();
+        let value: LitStr = syn::parse2(tokens).unwrap();
+        assert_eq!(value.value(), "Hello, %{name} {{x}}");
+    }
+
+    #[test]
+    fn reports_invalid_templates() {
+        assert_eq!(
+            error(
+                quote! { "with_arg", value = 1 },
+                &catalog(&[("with_arg", "Valeur : {}")])
+            ),
+            "translation of \"with_arg\" in locale \"fr\": positional placeholder {} in \"Valeur : {}\", use a named placeholder"
+        );
+    }
+
+    #[test]
+    fn count_without_plural_forms_is_an_argument() {
+        let tokens = expand(
+            quote! { "unread", count = n },
+            &catalog(&[("unread", "{count} non lus")]),
+        )
+        .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                match (&n,) {
+                    (__count,) => ::embedded_i18n::__FormatWith(
+                        move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
+                            f.write_fmt(::core::format_args!("{count} non lus", count = __count))
+                        }
+                    ),
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn select_with_arguments_binds_the_value() {
+        let catalog = locale_catalog(
+            "en",
+            messages(&[
+                ("mail\u{4}greeting.male", "Dear {name}"),
+                ("mail.greeting.other", "Hi {name}"),
+            ]),
+        );
+        let tokens = Fixture {
+            config: config(&["en"]),
+            catalogs: vec![catalog],
+        }
+        .expand(quote! { context = "mail", "greeting", select = gender, name = "Ada" })
+        .unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            quote! {
+                match (&"Ada", &gender,) {
+                    (__a0, __select,) => ::embedded_i18n::__FormatWith(
+                        move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
+                            {
+                                let _ = &__select;
+                                f.write_fmt(::core::format_args!("Hi {name}", name = __a0))
+                            }
+                        }
+                    ),
+                }
+            }
+            .to_string()
+        );
+    }
+
+    #[test]
+    fn select_takes_precedence_over_plural_forms() {
+        let catalog = locale_catalog(
+            "en",
+            messages(&[
+                ("replied.male", "He replied {count}"),
+                ("replied.other", "They replied {count}"),
+            ]),
+        );
+        let tokens = Fixture {
+            config: config(&["en"]),
+            catalogs: vec![catalog],
+        }
+        .expand(quote! { "replied", select = gender, count = 2 })
+        .unwrap()
+        .to_string();
+        assert!(!tokens.contains("unsigned_abs"), "{}", tokens);
+        assert!(tokens.contains("\"male\""), "{}", tokens);
     }
 
     #[test]
@@ -1166,32 +1650,6 @@ mod tests {
         let tokens = expand(quote! { "quote" }, &catalog(&[("quote", "a \"b\" \\ c")])).unwrap();
         let value: LitStr = syn::parse2(tokens).unwrap();
         assert_eq!(value.value(), "a \"b\" \\ c");
-    }
-
-    #[test]
-    fn rejects_identifier() {
-        assert!(error(quote! { greeting }, &catalog(&[])).contains("expected"));
-    }
-
-    #[test]
-    fn rejects_non_string_literal() {
-        assert_eq!(
-            error(quote! { 42 }, &catalog(&[])),
-            "expected a string literal or a C string literal"
-        );
-    }
-
-    #[test]
-    fn rejects_extra_argument() {
-        assert_eq!(
-            error(quote! { "greeting" "other" }, &catalog(&[])),
-            "unexpected argument"
-        );
-    }
-
-    #[test]
-    fn rejects_empty_input() {
-        assert!(!error(quote! {}, &catalog(&[])).is_empty());
     }
 
     #[test]
@@ -1260,29 +1718,6 @@ mod tests {
         assert_eq!(get(&catalog, "only"), "Only");
     }
 
-    #[test]
-    fn track_locales_includes_loaded_files() {
-        let tokens = expand_track_locales(quote! {}, &single(catalog(&[]))).unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! {
-                const _: () = {
-                    const _: &[u8] = include_bytes!("/locales/fr.json");
-                    const _: &[u8] = include_bytes!("/locales/en.json");
-                };
-            }
-            .to_string()
-        );
-    }
-
-    #[test]
-    fn track_locales_rejects_arguments() {
-        let error = expand_track_locales(quote! { "locales" }, &single(catalog(&[])))
-            .err()
-            .unwrap();
-        assert_eq!(error.to_string(), "unexpected argument");
-    }
-
     #[cfg(feature = "backend-json")]
     #[test]
     fn catalog_lists_loaded_files_once() {
@@ -1299,108 +1734,6 @@ mod tests {
         );
         let catalog = load_catalog(directory.path(), "en", "en", Options::default()).unwrap();
         assert_eq!(catalog.files, vec![directory.path().join("en.json")]);
-    }
-
-    #[test]
-    fn args_expands_to_format_args() {
-        let tokens = expand_args(
-            quote! { "greeting", name = user, 42 },
-            &catalog(&[("greeting", "Bonjour {name} {}")]),
-        )
-        .unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! { ::core::format_args!("Bonjour {name} {}", name = user, 42) }.to_string()
-        );
-    }
-
-    #[test]
-    fn args_without_arguments() {
-        let tokens =
-            expand_args(quote! { "greeting" }, &catalog(&[("greeting", "Bonjour")])).unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! { ::core::format_args!("Bonjour",) }.to_string()
-        );
-    }
-
-    #[test]
-    fn args_rejects_c_string() {
-        assert!(
-            expand_args(quote! { c"greeting" }, &catalog(&[("greeting", "Bonjour")]))
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("C strings cannot be used as format strings")
-        );
-    }
-
-    #[test]
-    fn args_requires_comma() {
-        assert!(
-            expand_args(
-                quote! { "greeting" 42 },
-                &catalog(&[("greeting", "Bonjour")])
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn write_expands_to_write() {
-        let tokens = expand_write(
-            quote! { &mut output, "greeting", 42 },
-            &catalog(&[("greeting", "Bonjour {}")]),
-        )
-        .unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! { ::core::write!(&mut output, "Bonjour {}", 42) }.to_string()
-        );
-    }
-
-    #[test]
-    fn write_requires_key() {
-        assert!(expand_write(quote! { output }, &catalog(&[])).is_err());
-    }
-
-    #[test]
-    fn write_reports_missing_key() {
-        assert!(
-            expand_write(quote! { output, "missing" }, &catalog(&[]))
-                .err()
-                .unwrap()
-                .to_string()
-                .starts_with("translation for \"missing\" not found")
-        );
-    }
-
-    #[test]
-    fn locales_directory_defaults_to_locales() {
-        assert_eq!(
-            locales_directory(Path::new("/crate"), None),
-            PathBuf::from("/crate/locales")
-        );
-        assert_eq!(
-            locales_directory(Path::new("/crate"), Some("")),
-            PathBuf::from("/crate/locales")
-        );
-    }
-
-    #[test]
-    fn locales_directory_relative_to_manifest() {
-        assert_eq!(
-            locales_directory(Path::new("/workspace/app"), Some("../i18n")),
-            PathBuf::from("/workspace/app/../i18n")
-        );
-    }
-
-    #[test]
-    fn locales_directory_absolute() {
-        assert_eq!(
-            locales_directory(Path::new("/workspace/app"), Some("/shared/i18n")),
-            PathBuf::from("/shared/i18n")
-        );
     }
 
     #[cfg(feature = "backend-json")]
@@ -1545,36 +1878,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unknown_option() {
-        assert_eq!(
-            error(quote! { scope = "menu", "Open" }, &catalog(&[])),
-            "unknown option `scope`, expected `context`"
-        );
-    }
-
-    #[test]
-    fn context_requires_string_literal_and_key() {
-        assert!(expand(quote! { context = menu, "Open" }, &catalog(&[])).is_err());
-        assert!(expand(quote! { context = "menu" }, &catalog(&[])).is_err());
-    }
-
-    #[test]
-    fn args_and_write_accept_context() {
-        let catalog = catalog(&[("menu\u{4}Open", "Ouvrir {}")]);
-        let tokens = expand_args(quote! { context = "menu", "Open", 1 }, &catalog).unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! { ::core::format_args!("Ouvrir {}", 1) }.to_string()
-        );
-        let tokens =
-            expand_write(quote! { output, context = "menu", "Open", 1 }, &catalog).unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! { ::core::write!(output, "Ouvrir {}", 1) }.to_string()
-        );
-    }
-
-    #[test]
     fn earlier_locale_wins_across_key_forms() {
         let catalog = Ok(Catalog {
             path: PathBuf::from("locales"),
@@ -1603,39 +1906,16 @@ mod tests {
         assert_eq!(tokens.to_string(), quote! { "Ouvrir" }.to_string());
     }
 
-    fn locale_catalog(name: &str, translations: Translations) -> Result<Catalog, String> {
-        Ok(Catalog {
-            path: PathBuf::from("locales"),
-            chain: vec![name.to_string()],
-            primary: vec![name.to_string()],
-            strict: false,
-            files: Vec::new(),
-            locales: vec![Locale {
-                name: name.to_string(),
-                translations,
-            }],
-        })
-    }
-
-    fn messages(entries: &[(&str, &str)]) -> Translations {
-        Translations::from(
-            entries
-                .iter()
-                .map(|(key, value)| (key.to_string(), value.to_string()))
-                .collect::<HashMap<_, _>>(),
-        )
-    }
-
     #[test]
     fn plural_uses_cldr_categories() {
         let catalog = locale_catalog(
             "fr",
             messages(&[("files.one", "fichier"), ("files.other", "fichiers")]),
         );
-        let tokens = expand_plural(quote! { "files", total }, &catalog)
+        let tokens = expand(quote! { "files", count = total }, &catalog)
             .unwrap()
             .to_string();
-        assert!(tokens.contains("let count = total"));
+        assert!(tokens.contains("match (& total ,)"), "{}", tokens);
         assert!(tokens.contains("\"fichier\""));
         assert!(tokens.contains("\"fichiers\""));
         assert!(!tokens.contains("1_000_000"));
@@ -1648,10 +1928,7 @@ mod tests {
             messages(&[("files.one", "файл"), ("files.other", "файла")]),
         );
         assert_eq!(
-            expand_plural(quote! { "files", 2 }, &catalog)
-                .err()
-                .unwrap()
-                .to_string(),
+            error(quote! { "files", count = 2 }, &catalog),
             "plural translation for \"files\" in locale \"ru\" is missing the few, many forms"
         );
     }
@@ -1660,10 +1937,7 @@ mod tests {
     fn plural_requires_known_language() {
         let catalog = locale_catalog("tlh", messages(&[("files.other", "files")]));
         assert!(
-            expand_plural(quote! { "files", 2 }, &catalog)
-                .err()
-                .unwrap()
-                .to_string()
+            error(quote! { "files", count = 2 }, &catalog)
                 .starts_with("no plural rules for locale \"tlh\"")
         );
     }
@@ -1676,13 +1950,20 @@ mod tests {
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         translations.plural_rule = Some(Expression::parse("n == 1 ? 0 : n == 2 ? 1 : 2").unwrap());
-        let tokens = expand_plural(quote! { "files", 3 }, &locale_catalog("xx", translations))
-            .unwrap()
-            .to_string();
-        assert!(tokens.contains("match"));
-        assert!(tokens.contains("0u64 => \"a\""));
-        assert!(tokens.contains("2u64 => \"c\""));
-        assert!(tokens.contains("_ => \"a\""));
+        let tokens = expand(
+            quote! { "files", count = 3 },
+            &locale_catalog("xx", translations),
+        )
+        .unwrap()
+        .to_string();
+        let arm = |text: &str| quote! { f.write_fmt(::core::format_args!(#text)) }.to_string();
+        assert!(
+            tokens.contains(&format!("0u64 => {}", arm("a"))),
+            "{}",
+            tokens
+        );
+        assert!(tokens.contains(&format!("2u64 => {}", arm("c"))));
+        assert!(tokens.contains(&format!("_ => {}", arm("a"))));
     }
 
     #[test]
@@ -1691,62 +1972,13 @@ mod tests {
         translations
             .plurals
             .insert("files".to_string(), vec!["a".to_string(), "b".to_string()]);
-        let tokens = expand_plural(quote! { "files", 3 }, &locale_catalog("xx", translations))
-            .unwrap()
-            .to_string();
+        let tokens = expand(
+            quote! { "files", count = 3 },
+            &locale_catalog("xx", translations),
+        )
+        .unwrap()
+        .to_string();
         assert!(tokens.contains("!= (1u64)"));
-    }
-
-    #[test]
-    fn plural_reports_missing_message() {
-        assert_eq!(
-            expand_plural(quote! { "files", 2 }, &catalog(&[]))
-                .err()
-                .unwrap()
-                .to_string(),
-            "plural translation for \"files\" not found in locales \"fr\", \"en\" (locales)"
-        );
-    }
-
-    #[test]
-    fn plural_requires_count() {
-        assert!(expand_plural(quote! { "files" }, &catalog(&[])).is_err());
-        assert!(expand_plural(quote! { "files", 1, 2 }, &catalog(&[])).is_err());
-    }
-
-    #[test]
-    fn plural_write_wraps_each_form() {
-        let catalog = locale_catalog(
-            "en",
-            messages(&[
-                ("files.one", "{count} file"),
-                ("files.other", "{count} files"),
-            ]),
-        );
-        let tokens = expand_plural_write(quote! { output, "files", total, extra = 1 }, &catalog)
-            .unwrap()
-            .to_string();
-        assert!(
-            tokens.contains(
-                &quote! { ::core::write!(output, "{count} file", extra = 1) }.to_string()
-            )
-        );
-        assert!(
-            tokens.contains(
-                &quote! { ::core::write!(output, "{count} files", extra = 1) }.to_string()
-            )
-        );
-    }
-
-    #[test]
-    fn plural_write_rejects_c_string() {
-        assert!(
-            expand_plural_write(quote! { output, c"files", 1 }, &catalog(&[]))
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("C strings cannot be used as format strings")
-        );
     }
 
     #[test]
@@ -1759,10 +1991,17 @@ mod tests {
                 ("files.other", "other"),
             ]),
         );
-        let tokens = expand_plural(quote! { "files", 0 }, &catalog)
+        let tokens = expand(quote! { "files", count = 0 }, &catalog)
             .unwrap()
             .to_string();
-        assert!(tokens.contains("== 0 { \"none\" }"));
+        assert!(
+            tokens.contains(&format!(
+                "== 0 {{ {} }}",
+                quote! { f.write_fmt(::core::format_args!("none")) }
+            )),
+            "{}",
+            tokens
+        );
     }
 
     #[test]
@@ -1778,7 +2017,7 @@ mod tests {
                 ("greetings.other", "Unrelated"),
             ]),
         );
-        let tokens = expand_select(quote! { "greeting", gender }, &catalog).unwrap();
+        let tokens = expand(quote! { "greeting", select = gender }, &catalog).unwrap();
         assert_eq!(
             tokens.to_string(),
             quote! {
@@ -1796,10 +2035,7 @@ mod tests {
     fn select_requires_other_variant() {
         let catalog = locale_catalog("en", messages(&[("greeting.male", "He")]));
         assert_eq!(
-            expand_select(quote! { "greeting", gender }, &catalog)
-                .err()
-                .unwrap()
-                .to_string(),
+            error(quote! { "greeting", select = gender }, &catalog),
             "select translation for \"greeting\" with an `other` variant not found in locales \"en\" (locales)"
         );
     }
@@ -1823,7 +2059,7 @@ mod tests {
                 },
             ],
         });
-        let tokens = expand_select(quote! { "greeting", gender }, &catalog).unwrap();
+        let tokens = expand(quote! { "greeting", select = gender }, &catalog).unwrap();
         assert_eq!(
             tokens.to_string(),
             quote! {
@@ -1837,48 +2073,23 @@ mod tests {
     }
 
     #[test]
-    fn select_with_context_and_write() {
-        let catalog = locale_catalog(
-            "en",
-            messages(&[
-                ("mail\u{4}greeting.male", "Dear {name}"),
-                ("mail.greeting.other", "Hi {name}"),
-            ]),
-        );
-        assert!(expand_select(quote! { context = "mail", "greeting", gender }, &catalog).is_ok());
-        let tokens = expand_select_write(
-            quote! { output, context = "mail", "greeting", gender, name = "Ada" },
-            &catalog,
-        )
-        .unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! {
-                {
-                    let _ = &gender;
-                    ::core::write!(output, "Hi {name}", name = "Ada")
-                }
-            }
-            .to_string()
-        );
-    }
-
-    #[test]
-    fn select_write_rejects_c_string() {
+    fn multi_mode_select_matches_on_the_index() {
+        let fixture = Fixture {
+            config: config(&["en", "fr"]),
+            catalogs: vec![
+                locale_catalog("en", messages(&[("replied.other", "They replied")])),
+                locale_catalog("fr", messages(&[("replied.other", "Iel a répondu")])),
+            ],
+        };
+        let tokens = fixture
+            .expand(quote! { "replied", select = gender })
+            .unwrap()
+            .to_string();
         assert!(
-            expand_select_write(quote! { output, c"greeting", gender }, &catalog(&[])).is_err()
+            tokens.starts_with(&format!("match {} {{ 0 =>", CURRENT_INDEX)),
+            "{}",
+            tokens
         );
-    }
-
-    #[test]
-    fn strict_flag_values() {
-        assert!(!is_enabled(None));
-        for value in ["", "0", "false", "No", " off "] {
-            assert!(!is_enabled(Some(value)), "{:?}", value);
-        }
-        for value in ["1", "true", "yes", "ON"] {
-            assert!(is_enabled(Some(value)), "{:?}", value);
-        }
     }
 
     #[cfg(feature = "backend-json")]
@@ -1913,8 +2124,8 @@ mod tests {
     fn strict_accepts_keys_of_the_primary_language() {
         let catalog = strict_catalog();
         assert!(expand(quote! { "door" }, &catalog).is_ok());
-        assert!(expand_plural(quote! { "files", 2 }, &catalog).is_ok());
-        assert!(expand_select(quote! { "replied", gender }, &catalog).is_ok());
+        assert!(expand(quote! { "files", count = 2 }, &catalog).is_ok());
+        assert!(expand(quote! { "replied", select = gender }, &catalog).is_ok());
     }
 
     #[cfg(feature = "backend-json")]
@@ -1923,20 +2134,14 @@ mod tests {
         let catalog = strict_catalog();
         assert_eq!(
             error(quote! { "train" }, &catalog),
-            "translation for \"train\" is missing from the primary locale \"fr-CA\", \"fr\" (EMBEDDED_I18N_STRICT is set)"
+            "translation for \"train\" is missing from the primary locale \"fr-CA\", \"fr\" (strict mode)"
         );
         assert!(
-            expand_plural(quote! { "boats", 2 }, &catalog)
-                .err()
-                .unwrap()
-                .to_string()
+            error(quote! { "boats", count = 2 }, &catalog)
                 .starts_with("plural translation for \"boats\" is missing from the primary locale")
         );
         assert!(
-            expand_select(quote! { "answered", gender }, &catalog)
-                .err()
-                .unwrap()
-                .to_string()
+            error(quote! { "answered", select = gender }, &catalog)
                 .contains("is missing from the primary locale")
         );
     }
@@ -1973,7 +2178,8 @@ mod tests {
         assert_eq!(get(&catalog, "files.one"), "[{count} fílé ~~]");
         let catalog = Ok(catalog);
         assert!(expand(quote! { "open" }, &catalog).is_ok());
-        assert!(expand_plural(quote! { "files", 2 }, &catalog).is_ok());
+        assert!(expand(quote! { "open", name = 1 }, &catalog).is_ok());
+        assert!(expand(quote! { "files", count = 2 }, &catalog).is_ok());
     }
 
     #[cfg(feature = "backend-po")]
@@ -2014,164 +2220,18 @@ mod tests {
         );
     }
 
-    fn multiple(locales: Vec<Result<Catalog, String>>) -> Catalogs {
-        Catalogs {
-            multiple: true,
-            catalogs: locales,
-        }
-    }
-
-    fn english_and_french() -> Catalogs {
-        multiple(vec![
-            locale_catalog(
-                "en",
-                messages(&[
-                    ("greeting", "Hello {name}"),
-                    ("files.one", "file"),
-                    ("files.other", "files"),
-                ]),
-            ),
-            locale_catalog(
-                "fr",
-                messages(&[
-                    ("greeting", "Bonjour {name}"),
-                    ("files.one", "fichier"),
-                    ("files.other", "fichiers"),
-                ]),
-            ),
-        ])
-    }
-
+    #[cfg(feature = "backend-json")]
     #[test]
-    fn parses_embedded_locales() {
-        assert_eq!(embedded_locales(" en, fr_CA ,,de "), ["en", "fr_CA", "de"]);
-        assert!(embedded_locales("").is_empty());
-        assert!(embedded_locales(" , ").is_empty());
-    }
-
-    #[test]
-    fn single_mode_keeps_literals() {
-        let tokens = localized(
-            quote! { "greeting" },
-            &single(catalog(&[("greeting", "Bonjour")])),
-            expand,
-            combine_array,
+    fn catalogs_are_cached_per_configuration() {
+        let directory = crate_with_locales("");
+        let config = Config::from_i18n_args(
+            quote! { available_locales = ["en", "fr"] },
+            directory.path(),
+            &Environment::default(),
         )
         .unwrap();
-        assert_eq!(tokens.to_string(), quote! { "Bonjour" }.to_string());
-    }
-
-    #[test]
-    fn multiple_mode_indexes_an_array() {
-        let tokens = localized(
-            quote! { "greeting" },
-            &english_and_french(),
-            expand,
-            combine_array,
-        )
-        .unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! {
-                (&["Hello {name}", "Bonjour {name}"])[::embedded_i18n::locale_index()]
-            }
-            .to_string()
-        );
-    }
-
-    #[test]
-    fn multiple_mode_matches_on_the_locale() {
-        let tokens = localized(
-            quote! { output, "greeting", name = "Ada" },
-            &english_and_french(),
-            expand_write,
-            combine_match,
-        )
-        .unwrap();
-        assert_eq!(
-            tokens.to_string(),
-            quote! {
-                match ::embedded_i18n::locale_index() {
-                    0usize => ::core::write!(output, "Hello {name}", name = "Ada"),
-                    _ => ::core::write!(output, "Bonjour {name}", name = "Ada"),
-                }
-            }
-            .to_string()
-        );
-        assert!(
-            localized(
-                quote! { "files", 2 },
-                &english_and_french(),
-                expand_plural,
-                combine_match
-            )
-            .unwrap()
-            .to_string()
-            .contains("\"fichiers\"")
-        );
-    }
-
-    #[test]
-    fn multiple_mode_formats_through_a_closure() {
-        let tokens =
-            expand_args_localized(quote! { "greeting", name = "Ada" }, &english_and_french())
-                .unwrap()
-                .to_string();
-        assert!(
-            tokens
-                .starts_with(":: core :: format_args ! (\"{}\" , :: embedded_i18n :: __FormatWith")
-        );
-        assert!(tokens.contains("\"Bonjour {name}\""));
-    }
-
-    #[test]
-    fn multiple_mode_reports_every_missing_locale() {
-        let catalogs = multiple(vec![
-            locale_catalog("en", messages(&[])),
-            locale_catalog("fr", messages(&[])),
-        ]);
-        let error = localized(quote! { "greeting" }, &catalogs, expand, combine_array)
-            .err()
-            .unwrap();
-        let messages: Vec<String> = error.into_iter().map(|error| error.to_string()).collect();
-        assert_eq!(
-            messages,
-            [
-                "translation for \"greeting\" not found in locales \"en\" (locales)",
-                "translation for \"greeting\" not found in locales \"fr\" (locales)",
-            ]
-        );
-    }
-
-    #[test]
-    fn single_embedded_locale_needs_no_dispatch() {
-        let catalogs = multiple(vec![locale_catalog(
-            "fr",
-            messages(&[("greeting", "Salut")]),
-        )]);
-        let tokens = localized(quote! { "greeting" }, &catalogs, expand, combine_array).unwrap();
-        assert_eq!(tokens.to_string(), quote! { "Salut" }.to_string());
-    }
-
-    #[test]
-    fn track_locales_lists_files_of_every_locale() {
-        let with_files = |name: &str, files: &[&str]| {
-            Ok(Catalog {
-                path: PathBuf::from("locales"),
-                chain: vec![name.to_string()],
-                primary: vec![name.to_string()],
-                strict: false,
-                files: files.iter().map(PathBuf::from).collect(),
-                locales: Vec::new(),
-            })
-        };
-        let catalogs = multiple(vec![
-            with_files("fr", &["/l/fr.json", "/l/en.json"]),
-            with_files("de", &["/l/de.json", "/l/en.json"]),
-        ]);
-        let tokens = expand_track_locales(quote! {}, &catalogs)
-            .unwrap()
-            .to_string();
-        assert_eq!(tokens.matches("include_bytes").count(), 3);
+        let first = catalogs(&config);
+        assert_eq!(first.len(), 2);
+        assert!(Arc::ptr_eq(&first, &catalogs(&config)));
     }
 }
