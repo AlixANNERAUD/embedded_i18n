@@ -515,9 +515,13 @@ fn expand_available(config: &Config) -> TokenStream2 {
     }
 }
 
-/// Wraps an expression in an invisible group, so that it keeps its precedence.
-fn grouped(expr: &syn::Expr) -> TokenStream2 {
-    Group::new(Delimiter::None, expr.to_token_stream()).into_token_stream()
+/// Wraps an expression in parentheses, so that it keeps its precedence as the
+/// operand of `&`.
+///
+/// An invisible (`Delimiter::None`) group is not enough: rustc parses
+/// `&` followed by the invisible group of `2 + 3` as `&2 + 3`.
+fn parenthesized(expr: &syn::Expr) -> TokenStream2 {
+    Group::new(Delimiter::Parenthesis, expr.to_token_stream()).into_token_stream()
 }
 
 /// Which locale a `t!` call translates into.
@@ -536,12 +540,9 @@ fn target(config: &Config, call: &Call) -> Target {
     let default = default_index(config);
     if !config.is_multiple() {
         let discard = match &call.locale {
-            Some(LocaleArgument::Expr(expr)) => {
-                let expr = grouped(expr);
-                Some(quote! {
-                    let _: ::embedded_i18n::Locale = ::core::convert::Into::into(#expr);
-                })
-            }
+            Some(LocaleArgument::Expr(expr)) => Some(quote! {
+                let _: ::embedded_i18n::Locale = ::core::convert::Into::into(#expr);
+            }),
             _ => None,
         };
         return Target::Fixed {
@@ -554,12 +555,9 @@ fn target(config: &Config, call: &Call) -> Target {
             index: locale_id::resolve(&config.available_locales, &tag.value()).unwrap_or(default),
             discard: None,
         },
-        Some(LocaleArgument::Expr(expr)) => {
-            let expr = grouped(expr);
-            Target::Runtime(quote! {
-                crate::__embedded_i18n_resolve(::embedded_i18n::Locale::from(#expr).id())
-            })
-        }
+        Some(LocaleArgument::Expr(expr)) => Target::Runtime(quote! {
+            crate::__embedded_i18n_resolve(::embedded_i18n::Locale::from(#expr).id())
+        }),
         None => Target::Runtime(current_index()),
     }
 }
@@ -622,7 +620,7 @@ fn expand_str(
     target: Target,
     indexes: &[usize],
 ) -> syn::Result<TokenStream2> {
-    let select = call.select.as_ref().map(grouped);
+    let select = call.select.as_ref().map(parenthesized);
     let arm = |text: &str| literal(&call.key, text, name);
     let mut values = each(indexes, |index| {
         selection(call, name, &catalogs[index], select.as_ref(), None, &arm)
@@ -662,19 +660,19 @@ fn expand_display(
     let mut bindings: Vec<(&str, Span, Ident)> = Vec::new();
     for (position, argument) in call.arguments.iter().enumerate() {
         let binding = Ident::new(&format!("__a{position}"), mixed);
-        let value = grouped(&argument.value);
+        let value = parenthesized(&argument.value);
         values.push(quote! { &#value });
         patterns.push(binding.to_token_stream());
         bindings.push((&argument.name, argument.span, binding));
     }
     if let Some(value) = &call.count {
-        let value = grouped(value);
+        let value = parenthesized(value);
         values.push(quote! { &#value });
         patterns.push(count.to_token_stream());
         bindings.push(("count", call.key.span(), count.clone()));
     }
     if let Some(value) = &call.select {
-        let value = grouped(value);
+        let value = parenthesized(value);
         values.push(quote! { &#value });
         patterns.push(select.to_token_stream());
     }
@@ -1416,7 +1414,7 @@ mod tests {
             tokens.to_string(),
             quote! {
                 match (
-                    &user.name,
+                    &(user.name),
                     { let _: ::embedded_i18n::Locale = ::core::convert::Into::into(user.locale); },
                 ) {
                     (__a0, _,) => ::embedded_i18n::__FormatWith(
@@ -1454,7 +1452,7 @@ mod tests {
         assert_eq!(
             tokens.to_string(),
             quote! {
-                match (&"Ada", crate::__embedded_i18n_resolve(::embedded_i18n::__current_locale()),) {
+                match (&("Ada"), crate::__embedded_i18n_resolve(::embedded_i18n::__current_locale()),) {
                     (__a0, __index,) => ::embedded_i18n::__FormatWith(
                         move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
                             match __index {
@@ -1552,7 +1550,7 @@ mod tests {
         assert_eq!(
             tokens.to_string(),
             quote! {
-                match (&n,) {
+                match (&(n),) {
                     (__count,) => ::embedded_i18n::__FormatWith(
                         move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
                             f.write_fmt(::core::format_args!("{count} non lus", count = __count))
@@ -1582,7 +1580,7 @@ mod tests {
         assert_eq!(
             tokens.to_string(),
             quote! {
-                match (&"Ada", &gender,) {
+                match (&("Ada"), &(gender),) {
                     (__a0, __select,) => ::embedded_i18n::__FormatWith(
                         move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
                             {
@@ -1594,6 +1592,61 @@ mod tests {
                 }
             }
             .to_string()
+        );
+    }
+
+    #[test]
+    fn borrowed_expressions_keep_their_precedence() {
+        let fixture = Fixture {
+            config: config(&["en"]),
+            catalogs: vec![locale_catalog(
+                "en",
+                messages(&[
+                    ("files.one", "{count} file"),
+                    ("files.other", "{count} files"),
+                    ("sum", "{name}"),
+                    ("replied.male", "He replied {name}"),
+                    ("replied.other", "They replied {name}"),
+                ]),
+            )],
+        };
+        let tokens = fixture
+            .expand(quote! { "files", count = 2 + 3 })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.starts_with(&quote! { match (&(2 + 3),) }.to_string()),
+            "{}",
+            tokens
+        );
+        let tokens = fixture
+            .expand(quote! { "sum", name = x + y })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.starts_with(&quote! { match (&(x + y),) }.to_string()),
+            "{}",
+            tokens
+        );
+        let tokens = fixture
+            .expand(quote! { "replied", select = a.b() + c, name = x + y })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.starts_with(&quote! { match (&(x + y), &(a.b() + c),) }.to_string()),
+            "{}",
+            tokens
+        );
+        let tokens = fixture
+            .expand(quote! { "replied", select = a.b() + c })
+            .unwrap()
+            .to_string();
+        assert!(
+            tokens.contains(
+                &quote! { ::core::convert::AsRef::<str>::as_ref(&(a.b() + c)) }.to_string()
+            ),
+            "{}",
+            tokens
         );
     }
 
@@ -1915,7 +1968,7 @@ mod tests {
         let tokens = expand(quote! { "files", count = total }, &catalog)
             .unwrap()
             .to_string();
-        assert!(tokens.contains("match (& total ,)"), "{}", tokens);
+        assert!(tokens.contains("match (& (total) ,)"), "{}", tokens);
         assert!(tokens.contains("\"fichier\""));
         assert!(tokens.contains("\"fichiers\""));
         assert!(!tokens.contains("1_000_000"));
@@ -2021,7 +2074,7 @@ mod tests {
         assert_eq!(
             tokens.to_string(),
             quote! {
-                match ::core::convert::AsRef::<str>::as_ref(&gender) {
+                match ::core::convert::AsRef::<str>::as_ref(&(gender)) {
                     "female" => "She",
                     "male" => "He",
                     _ => "They",
@@ -2064,7 +2117,7 @@ mod tests {
             tokens.to_string(),
             quote! {
                 {
-                    let _ = &gender;
+                    let _ = &(gender);
                     "Iel"
                 }
             }
