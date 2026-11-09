@@ -11,6 +11,8 @@ Use the `EMBEDDED_I18N_LOCALE` override, without changing the code:
 EMBEDDED_I18N_LOCALE=pseudo cargo run
 ```
 
+A crate that lists its `available_locales` without `pseudo` ignores this override and keeps its own default locale, so only crates with a single embedded locale, or with `pseudo` in their list, are pseudo-localized.
+
 or set `pseudo` as the default locale of [`i18n!`]:
 
 ```rust
