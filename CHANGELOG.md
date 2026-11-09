@@ -5,6 +5,23 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0](https://github.com/AlixANNERAUD/embedded_i18n/compare/v0.1.3...v0.2.0) - 2026-11-09
+
+### Added
+
+- *(macros)* building blocks for the rust-i18n style API ([#63](https://github.com/AlixANNERAUD/embedded_i18n/pull/63))
+- [**breaking**] rust-i18n style API ([#66](https://github.com/AlixANNERAUD/embedded_i18n/pull/66))
+
+### Fixed
+
+- point CI, badges and the manifest to the renamed repository ([#65](https://github.com/AlixANNERAUD/embedded_i18n/pull/65))
+
+### Miscellaneous
+
+- set up mise and Mr Boxington ([#58](https://github.com/AlixANNERAUD/embedded_i18n/pull/58))
+- bump the github-actions group across 1 directory with 2 updates ([#61](https://github.com/AlixANNERAUD/embedded_i18n/pull/61))
+- *(deps)* bump the cargo group across 1 directory with 5 updates ([#64](https://github.com/AlixANNERAUD/embedded_i18n/pull/64))
+
 ## [0.1.3](https://github.com/AlixANNERAUD/embedded-i18n/compare/v0.1.2...v0.1.3) - 2026-10-19
 
 ### Fixed
