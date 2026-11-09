@@ -225,9 +225,6 @@ fn locale_macros_describe_the_crate() {
     assert_eq!(locale!(), "en");
 }
 
-// TODO(Task 6 fix round 1): re-enable once `count = 2 + 3` keeps its precedence
-// in the expansion (E0614 today). A compile error cannot be `#[ignore]`d.
-#[cfg(any())]
 #[test]
 fn temporaries_used_inline() {
     let mut buffer = Buffer::new();
