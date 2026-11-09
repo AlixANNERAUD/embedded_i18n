@@ -440,7 +440,7 @@ fn expand_i18n(
                 ::embedded_i18n::__expand!(#config_tokens $($tokens)*)
             };
         }
-        #(const _: &[u8] = include_bytes!(#files);)*
+        #(const _: &[u8] = ::core::include_bytes!(#files);)*
         const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALE");
         const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALES");
         #resolver
@@ -1262,9 +1262,9 @@ mod tests {
                     ::embedded_i18n::__expand!(#config_tokens $($tokens)*)
                 };
             }
-            const _: &[u8] = include_bytes!(#en);
-            const _: &[u8] = include_bytes!(#fr);
-            const _: &[u8] = include_bytes!(#manifest);
+            const _: &[u8] = ::core::include_bytes!(#en);
+            const _: &[u8] = ::core::include_bytes!(#fr);
+            const _: &[u8] = ::core::include_bytes!(#manifest);
             const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALE");
             const _: ::core::option::Option<&str> = ::core::option_env!("EMBEDDED_I18N_LOCALES");
             #resolver
