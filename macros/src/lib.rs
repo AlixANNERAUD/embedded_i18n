@@ -726,14 +726,25 @@ fn expand_display(
             placeholder::check(&template, &names, name, locale)
                 .map_err(|error| syn::Error::new(span, error))?;
             let format = LitStr::new(&placeholder::apply_specs(&template, &specs), span);
-            let arguments = template.placeholders.iter().map(|placeholder| {
-                let (_, span, binding) = bindings
-                    .iter()
-                    .find(|(name, _, _)| name == placeholder)
-                    .expect("checked against the argument names");
-                let placeholder = Ident::new(placeholder, *span);
-                quote! { #placeholder = #binding }
-            });
+            let arguments = template
+                .placeholders
+                .iter()
+                .map(|placeholder| {
+                    let (_, span, binding) = bindings
+                        .iter()
+                        .find(|(name, _, _)| name == placeholder)
+                        .expect("checked against the argument names");
+                    let placeholder = argument_name(placeholder, *span).ok_or_else(|| {
+                        syn::Error::new(
+                            *span,
+                            format!(
+                                "placeholder {{{placeholder}}} in the translation of {name:?} (locale {locale:?}) is a Rust keyword"
+                            ),
+                        )
+                    })?;
+                    Ok(quote! { #placeholder = #binding })
+                })
+                .collect::<syn::Result<Vec<_>>>()?;
             Ok(quote! {
                 #formatter.write_fmt(::core::format_args!(#format #(, #arguments)*))
             })
@@ -759,6 +770,27 @@ fn expand_display(
             ),
         }
     })
+}
+
+/// Keywords of every edition, strict and reserved, which `format_args!` only
+/// accepts as raw identifiers. Weak keywords (`union`, `raw`, ..) are plain
+/// identifiers.
+const KEYWORDS: &[&str] = &[
+    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "do", "dyn",
+    "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl", "in", "let",
+    "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref", "return",
+    "static", "struct", "trait", "true", "try", "type", "typeof", "unsafe", "unsized", "use",
+    "virtual", "where", "while", "yield",
+];
+
+/// The `format_args!` argument name of a placeholder: a raw identifier for
+/// keywords, `None` for the keywords that cannot be raw (`self`, `crate`, ..).
+fn argument_name(placeholder: &str, span: Span) -> Option<Ident> {
+    match placeholder {
+        "self" | "Self" | "super" | "crate" => None,
+        _ if KEYWORDS.contains(&placeholder) => Some(Ident::new_raw(placeholder, span)),
+        _ => Some(Ident::new(placeholder, span)),
+    }
 }
 
 /// The translation of a call in one catalog: a select variant, a plural form
@@ -1708,6 +1740,40 @@ mod tests {
         assert!(
             error(quote! { "broken", name = x }, &catalog)
                 .starts_with("translation of \"broken\" in locale \"en\": "),
+        );
+    }
+
+    #[test]
+    fn keyword_placeholders_are_raw_identifiers() {
+        let catalog = catalog(&[
+            ("kind", "{type} / {fn} / {gen} / {union}"),
+            ("me", "{self}"),
+        ]);
+        let tokens = expand(
+            quote! { "kind", type = t, r#fn = f, gen = g, union = u },
+            &catalog,
+        )
+        .unwrap()
+        .to_string();
+        assert!(
+            tokens.contains(
+                &quote! {
+                    ::core::format_args!(
+                        "{type} / {fn} / {gen} / {union}",
+                        r#type = __a0,
+                        r#fn = __a1,
+                        r#gen = __a2,
+                        union = __a3
+                    )
+                }
+                .to_string()
+            ),
+            "{}",
+            tokens
+        );
+        assert_eq!(
+            error(quote! { "me", self = s }, &catalog),
+            "placeholder {self} in the translation of \"me\" (locale \"fr\") is a Rust keyword"
         );
     }
 
