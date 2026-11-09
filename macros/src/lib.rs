@@ -876,7 +876,7 @@ fn selection(
             let selection = plural_selection(call, name, catalog, arm)?;
             return Ok(quote! {
                 {
-                    let #n: u64 = (*#count as i64).unsigned_abs();
+                    let #n: u64 = ::embedded_i18n::__PluralCount::__plural_operand(#count);
                     #selection
                 }
             });
@@ -1302,7 +1302,10 @@ mod tests {
             tokens
         );
         assert!(
-            tokens.contains(&quote! { let n: u64 = (*__count as i64).unsigned_abs(); }.to_string()),
+            tokens.contains(
+                &quote! { let n: u64 = ::embedded_i18n::__PluralCount::__plural_operand(__count); }
+                    .to_string()
+            ),
             "{}",
             tokens
         );
@@ -1908,7 +1911,7 @@ mod tests {
         .expand(quote! { "replied", select = gender, count = 2 })
         .unwrap()
         .to_string();
-        assert!(!tokens.contains("unsigned_abs"), "{}", tokens);
+        assert!(!tokens.contains("__plural_operand"), "{}", tokens);
         assert!(tokens.contains("\"male\""), "{}", tokens);
     }
 

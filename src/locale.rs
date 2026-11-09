@@ -152,6 +152,55 @@ impl<F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result> fmt::Display for __FormatWit
     }
 }
 
+/// The plural operand of a `count` argument of `t!`: the absolute value of an
+/// integer, saturated to `u64`.
+///
+/// Only integers implement it, so `count = 2.5` or `count = true` does not
+/// compile:
+///
+/// ```compile_fail
+/// embedded_i18n::i18n!();
+///
+/// fn main() {
+///     let _ = embedded_i18n::t!("files", count = 2.5);
+/// }
+/// ```
+#[doc(hidden)]
+pub trait __PluralCount {
+    /// Returns the absolute value, saturated to `u64`.
+    fn __plural_operand(&self) -> u64;
+}
+
+impl<T: __PluralCount + ?Sized> __PluralCount for &T {
+    fn __plural_operand(&self) -> u64 {
+        (**self).__plural_operand()
+    }
+}
+
+macro_rules! plural_count {
+    (unsigned: $($unsigned:ty),*; signed: $($signed:ty),*) => {
+        $(
+            impl __PluralCount for $unsigned {
+                fn __plural_operand(&self) -> u64 {
+                    u64::try_from(*self).unwrap_or(u64::MAX)
+                }
+            }
+        )*
+        $(
+            impl __PluralCount for $signed {
+                fn __plural_operand(&self) -> u64 {
+                    u64::try_from(self.unsigned_abs()).unwrap_or(u64::MAX)
+                }
+            }
+        )*
+    };
+}
+
+plural_count!(
+    unsigned: u8, u16, u32, u64, u128, usize;
+    signed: i8, i16, i32, i64, i128, isize
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,6 +235,17 @@ mod tests {
         assert_eq!(__current_locale(), 0x01A5_B85D);
         set_locale("");
         assert_eq!(__current_locale(), 0);
+    }
+
+    #[test]
+    fn plural_operand_is_the_saturated_absolute_value() {
+        assert_eq!(3u8.__plural_operand(), 3);
+        assert_eq!((-1i32).__plural_operand(), 1);
+        assert_eq!(i64::MIN.__plural_operand(), 1 << 63);
+        assert_eq!(u64::MAX.__plural_operand(), u64::MAX);
+        assert_eq!(u128::MAX.__plural_operand(), u64::MAX);
+        assert_eq!(i128::MIN.__plural_operand(), u64::MAX);
+        assert_eq!((&&7usize).__plural_operand(), 7);
     }
 
     const _: () = assert!(Locale::new("en").id() == 0x015C_0000); // const fn

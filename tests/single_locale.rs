@@ -158,6 +158,19 @@ fn translate_plural_selects_form() {
 }
 
 #[test]
+fn translate_plural_uses_the_absolute_value_without_wrapping() {
+    assert_eq!(t!("files", count = -1).to_string(), "-1 file");
+    assert_eq!(
+        t!("files", count = u64::MAX).to_string(),
+        "18446744073709551615 files"
+    );
+    assert_eq!(
+        t!("files", count = &(u128::MAX)).to_string(),
+        "340282366920938463463374607431768211455 files"
+    );
+}
+
+#[test]
 fn translate_plural_with_context() {
     assert_eq!(
         t!("files", context = "menu", count = 1).to_string(),
