@@ -294,6 +294,7 @@ In the messages below, the subject is `translation for "key"`, `plural translati
 | Unescaped brace | `translation of "key" in locale "en": unbalanced brace in "..."` |
 | Positional placeholder | `translation of "key" in locale "en": positional placeholder {} in "...", use a named placeholder` |
 | Invalid placeholder name | `translation of "key" in locale "en": invalid placeholder {...} in "..."` |
+| Placeholder named `self`, `Self`, `super` or `crate` (other keywords such as `{type}` work) | `placeholder {self} in the translation of "key" (locale "en") is a Rust keyword` |
 | Missing plural category | `plural translation for "files" in locale "ru" is missing the few, many forms` |
 | Plural message from a locale without built-in rules | `no plural rules for locale "xx", use a gettext PO or MO file with a Plural-Forms header` |
 | Select message without `other` variant | `` select translation for "replied" with an `other` variant not found in locales "en" (...) `` |
