@@ -9,7 +9,7 @@ authors.workspace = true
 description = "Internal implementation detail of embedded-i18n. Not meant for direct use; depend on embedded-i18n instead."
 
 [dependencies]
-syn = "2.0"
+syn = "3.0"
 quote = "1.0"
 proc-macro2 = "1.0"
 serde_json = { version = "1.0", optional = true }
