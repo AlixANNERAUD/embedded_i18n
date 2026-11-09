@@ -398,6 +398,10 @@ fn i18n_config(
 
 /// Expands `i18n!`: the crate-local configuration macro, rebuild tracking and,
 /// with several locales, the crate's resolution function.
+///
+/// Locale files that fail to load are reported here, next to these items:
+/// `t!` calls still expand (`__expand!` leaves those errors to `i18n!`), so
+/// each error is shown once.
 fn expand_i18n(
     args: TokenStream2,
     manifest_dir: &Path,
@@ -428,9 +432,7 @@ fn expand_i18n(
     for message in messages {
         push_error(&mut errors, syn::Error::new(Span::call_site(), message));
     }
-    if let Some(errors) = errors {
-        return Err(errors);
-    }
+    let errors = errors.map(syn::Error::into_compile_error);
 
     let manifest = Config::manifest_file(manifest_dir);
     if manifest.is_file() {
@@ -443,6 +445,7 @@ fn expand_i18n(
         .then(|| locale_id::resolver(&config.available_locales, default_index(&config)));
 
     Ok(quote! {
+        #errors
         #[doc(hidden)]
         #[allow(unused_macros)]
         macro_rules! embedded_i18n_requires_i18n_at_the_crate_root {
@@ -632,8 +635,10 @@ fn expand_str(
 ) -> syn::Result<TokenStream2> {
     let select = call.select.as_ref().map(parenthesized);
     let arm = |_: &str, text: &str| literal(&call.key, text, name);
-    let mut values = each(indexes, |index| {
-        selection(call, name, &catalogs[index], select.as_ref(), None, &arm)
+    let mut values = each(indexes, |index| match &catalogs[index] {
+        Ok(catalog) => selection(call, name, catalog, select.as_ref(), None, &arm),
+        // `i18n!` reports the error; this placeholder only has to type-check.
+        Err(_) => literal(&call.key, "", name),
     })?;
     Ok(match target {
         Target::Fixed { discard: None, .. } => values.remove(0),
@@ -734,14 +739,11 @@ fn expand_display(
             })
         };
         let count = call.count.as_ref().map(|_| &count);
-        selection(
-            call,
-            name,
-            &catalogs[position],
-            select.as_ref(),
-            count,
-            &arm,
-        )
+        match &catalogs[position] {
+            Ok(catalog) => selection(call, name, catalog, select.as_ref(), count, &arm),
+            // `i18n!` reports the error; this placeholder only has to type-check.
+            Err(_) => Ok(quote! { ::core::result::Result::Ok(()) }),
+        }
     })?;
 
     let body = match &target {
@@ -765,15 +767,12 @@ fn expand_display(
 fn selection(
     call: &Call,
     name: &str,
-    catalog: &Result<Catalog, String>,
+    catalog: &Catalog,
     select: Option<&TokenStream2>,
     count: Option<&Ident>,
     arm: &dyn Fn(&str, &str) -> syn::Result<TokenStream2>,
 ) -> syn::Result<TokenStream2> {
     let span = call.key.span();
-    let catalog = catalog
-        .as_ref()
-        .map_err(|error| syn::Error::new(span, error))?;
     let keys = call.keys(name);
 
     if let Some(value) = select {
@@ -1355,13 +1354,18 @@ mod tests {
     #[test]
     fn i18n_reports_a_missing_locales_directory() {
         let directory = tempfile::tempdir().unwrap();
-        let error = expand_i18n(quote! {}, directory.path(), &Environment::default())
-            .unwrap_err()
+        let tokens = expand_i18n(quote! {}, directory.path(), &Environment::default())
+            .unwrap()
             .to_string();
         assert!(
-            error.starts_with("locales directory not found"),
+            tokens.starts_with(":: core :: compile_error ! { \"locales directory not found"),
             "{}",
-            error
+            tokens
+        );
+        assert!(
+            tokens.contains("macro_rules ! embedded_i18n_requires_i18n_at_the_crate_root"),
+            "{}",
+            tokens
         );
     }
 
@@ -1392,6 +1396,35 @@ mod tests {
         );
         assert!(expand_request(quote! { #config_tokens @other }).is_err());
         assert!(expand_request(quote! { @t "greeting" }).is_err());
+    }
+
+    #[cfg(feature = "backend-json")]
+    #[test]
+    fn broken_locale_files_are_reported_by_i18n_only() {
+        let directory = crate_with_locales("");
+        std::fs::write(directory.path().join("locales/fr.json"), "{").unwrap();
+        let args = quote! { available_locales = ["en", "fr"] };
+        let tokens = expand_i18n(args.clone(), directory.path(), &Environment::default())
+            .unwrap()
+            .to_string();
+        // One error for the broken file, next to the items `t!` needs.
+        assert_eq!(tokens.matches("compile_error").count(), 1, "{}", tokens);
+        assert!(tokens.contains("fr.json"), "{}", tokens);
+        assert!(
+            tokens.contains("macro_rules ! embedded_i18n_requires_i18n_at_the_crate_root"),
+            "{}",
+            tokens
+        );
+        assert!(tokens.contains("__embedded_i18n_resolve"), "{}", tokens);
+        let config =
+            Config::from_i18n_args(args, directory.path(), &Environment::default()).unwrap();
+        let config_tokens = config.to_tokens();
+        let tokens =
+            expand_request(quote! { #config_tokens @t "greeting", locale = "fr" }).unwrap();
+        assert_eq!(tokens.to_string(), quote! { "" }.to_string());
+        let tokens =
+            expand_request(quote! { #config_tokens @t "greeting", locale = "en" }).unwrap();
+        assert_eq!(tokens.to_string(), quote! { "Hello" }.to_string());
     }
 
     #[test]
@@ -1774,11 +1807,42 @@ mod tests {
     }
 
     #[test]
-    fn reports_catalog_error() {
+    fn leaves_catalog_errors_to_i18n() {
+        let broken = Err("broken".to_string());
+        let tokens = expand(quote! { "greeting" }, &broken).unwrap();
+        assert_eq!(tokens.to_string(), quote! { "" }.to_string());
+        let tokens = expand(quote! { c"greeting" }, &broken).unwrap();
+        assert_eq!(tokens.to_string(), quote! { c"" }.to_string());
+        let tokens = expand(quote! { "greeting", select = g }, &broken).unwrap();
+        assert_eq!(tokens.to_string(), quote! { "" }.to_string());
+        let tokens = expand(quote! { "greeting", name = x }, &broken).unwrap();
         assert_eq!(
-            error(quote! { "greeting" }, &Err("broken".to_string())),
-            "broken"
+            tokens.to_string(),
+            quote! {
+                match (&(x),) {
+                    (__a0,) => ::embedded_i18n::__FormatWith(
+                        move |f: &mut ::core::fmt::Formatter<'_>| -> ::core::fmt::Result {
+                            ::core::result::Result::Ok(())
+                        }
+                    ),
+                }
+            }
+            .to_string()
         );
+
+        // The locales that loaded are still checked.
+        let mut fixture = english_and_french();
+        fixture.catalogs[0] = broken;
+        let tokens = fixture.expand(quote! { "greeting" }).unwrap();
+        assert_eq!(
+            tokens.to_string(),
+            format!("(& [\"\" , \"Bonjour {{name}}\"]) [{}]", CURRENT_INDEX)
+        );
+        let error = fixture
+            .expand(quote! { "greeting", who = x })
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("locale \"fr\""), "{}", error);
     }
 
     #[test]
