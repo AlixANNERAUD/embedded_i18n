@@ -153,6 +153,15 @@ fn parse_spec(input: ParseStream) -> syn::Result<Option<String>> {
     Ok(if spec.is_empty() { None } else { Some(spec) })
 }
 
+/// Removes the invisible groups that `macro_rules!` puts around `$value:expr` fragments, so
+/// that a literal forwarded by another macro is still seen as a literal.
+fn ungrouped(value: Expr) -> Expr {
+    match value {
+        Expr::Group(group) => ungrouped(*group.expr),
+        other => other,
+    }
+}
+
 /// Applies a reserved option, parsing its value.
 fn parse_reserved(
     call: &mut PartialCall,
@@ -160,7 +169,7 @@ fn parse_reserved(
     name: &str,
     span: Span,
 ) -> syn::Result<()> {
-    let value: Expr = input.parse()?;
+    let value = ungrouped(input.parse()?);
     match name {
         "context" => match value {
             Expr::Lit(ExprLit {
@@ -251,7 +260,11 @@ fn parse_item(call: &mut PartialCall, input: ParseStream) -> syn::Result<()> {
         };
     }
 
-    if input.peek(syn::Ident::peek_any) && input.peek2(Token![=]) && !input.peek2(Token![==]) {
+    if input.peek(syn::Ident::peek_any)
+        && input.peek2(Token![=])
+        && !input.peek2(Token![==])
+        && !input.peek2(Token![=>])
+    {
         let ident = syn::Ident::parse_any(input)?;
         input.parse::<Token![=]>()?;
         return parse_named(call, input, ident.unraw().to_string(), ident.span());
@@ -431,6 +444,17 @@ mod tests {
     }
 
     #[test]
+    fn sees_literals_forwarded_by_other_macros() {
+        let grouped =
+            |literal: TokenStream| proc_macro2::Group::new(proc_macro2::Delimiter::None, literal);
+        let fr = grouped(quote!("fr"));
+        let menu = grouped(quote!("menu"));
+        let call = parse(quote!("k", locale = #fr, context = #menu));
+        assert!(matches!(call.locale, Some(LocaleArgument::Literal(ref l)) if l.value() == "fr"));
+        assert_eq!(call.context.unwrap().value(), "menu");
+    }
+
+    #[test]
     fn rejects_invalid_calls() {
         let no_key = "expected a message key (string or C string literal)";
         assert_eq!(error(quote!()), no_key);
@@ -460,6 +484,7 @@ mod tests {
         assert_eq!(error(quote!("k", user.name)), positional);
         assert_eq!(error(quote!("k", "other")), positional);
         assert_eq!(error(quote!("k", 5)), positional);
+        assert_eq!(error(quote!("k", a => 1)), positional);
 
         let context = "`context` expects a string literal";
         assert_eq!(error(quote!("k", context = menu)), context);
