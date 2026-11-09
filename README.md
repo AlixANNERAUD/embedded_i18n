@@ -2,8 +2,8 @@
 
 [![crates.io](https://img.shields.io/crates/v/embedded-i18n.svg)](https://crates.io/crates/embedded-i18n)
 [![docs.rs](https://img.shields.io/docsrs/embedded-i18n)](https://docs.rs/embedded-i18n)
-[![CI](https://github.com/AlixANNERAUD/embedded-i18n/actions/workflows/check.yml/badge.svg)](https://github.com/AlixANNERAUD/embedded-i18n/actions/workflows/check.yml)
-[![codecov](https://codecov.io/github/AlixANNERAUD/embedded-i18n/graph/badge.svg?token=0C27GIS0BK)](https://codecov.io/github/AlixANNERAUD/embedded-i18n)
+[![CI](https://github.com/AlixANNERAUD/embedded_i18n/actions/workflows/check.yml/badge.svg)](https://github.com/AlixANNERAUD/embedded_i18n/actions/workflows/check.yml)
+[![codecov](https://codecov.io/github/AlixANNERAUD/embedded_i18n/graph/badge.svg?token=0C27GIS0BK)](https://codecov.io/github/AlixANNERAUD/embedded_i18n)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](#minimum-supported-rust-version)
 [![no_std](https://img.shields.io/badge/no__std-no%20alloc-success.svg)](docs/no_std.md)
