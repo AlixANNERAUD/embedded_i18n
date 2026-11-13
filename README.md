@@ -4,6 +4,7 @@
 [![docs.rs](https://img.shields.io/docsrs/embedded-i18n)](https://docs.rs/embedded-i18n)
 [![CI](https://github.com/AlixANNERAUD/embedded_i18n/actions/workflows/check.yml/badge.svg)](https://github.com/AlixANNERAUD/embedded_i18n/actions/workflows/check.yml)
 [![codecov](https://codecov.io/github/AlixANNERAUD/embedded_i18n/graph/badge.svg?token=0C27GIS0BK)](https://codecov.io/github/AlixANNERAUD/embedded_i18n)
+[![vulnerabilities](https://vulnerabilites.anneraud.fr/badges/02d8e95f0db5021898fc672d44c7291f.svg)](https://vulnerabilites.anneraud.fr/organizations/alix_anneraud/projects/embedded_i18n)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV 1.85](https://img.shields.io/badge/MSRV-1.85-orange.svg)](#minimum-supported-rust-version)
 [![no_std](https://img.shields.io/badge/no__std-no%20alloc-success.svg)](docs/reference/features_and_no_std.md)
